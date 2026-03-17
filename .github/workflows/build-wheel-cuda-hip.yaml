@@ -436,6 +436,12 @@ jobs:
           
           echo "CUDA_VERSION=$cuda_version" >> $GITHUB_ENV
 
+      # - uses: actions/upload-artifact@v4
+      #   with:
+      #     name: artifacts-cuda-${{ env.CUDA_VERSION }}-${{ matrix.platform }}
+      #     path: ./dist/*.whl
+      #     overwrite: true
+
       - uses: softprops/action-gh-release@v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
