@@ -144,7 +144,10 @@ def download_file(
     final_url, file_size = file_info
 
     # Pre-allocate the file.
-    fd = os.open(str(dest), os.O_CREAT | os.O_RDWR | os.O_TRUNC)
+    # O_BINARY is required on Windows to prevent \n → \r\n translation;
+    # it is 0 on POSIX (no-op).
+    flags = os.O_CREAT | os.O_RDWR | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(str(dest), flags)
     try:
         if hasattr(os, "ftruncate"):
             os.ftruncate(fd, file_size)
