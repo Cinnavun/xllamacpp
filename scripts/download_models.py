@@ -4,6 +4,12 @@
 Each file is downloaded using multiple connections (HTTP Range requests) for
 maximum throughput, similar to aria2. Falls back to single-connection if the
 server doesn't support Range.
+
+Architecture (deadlock-free):
+  - file_pool: runs download_one() — one thread per file.
+  - chunk_pool: runs download_chunk() — leaf I/O tasks only.
+  File threads submit chunks to the chunk pool and wait; chunk tasks never
+  submit sub-tasks, so no circular dependency → no deadlock.
 """
 
 import hashlib
@@ -16,6 +22,7 @@ from pathlib import Path
 
 MODELS_DIR = Path("models")
 CHUNKS_PER_FILE = 4  # Number of parallel connections per file download.
+MAX_CONCURRENT_FILES = 4  # Max files downloading simultaneously.
 READ_CHUNK_SIZE = 1 << 23  # 8 MB — buffer size for network reads / disk writes.
 
 # (filename, url, sha256)
@@ -120,13 +127,12 @@ def download_chunk(
 
 
 def download_file(
-    url: str, dest: Path, num_chunks: int, pool: ThreadPoolExecutor
+    url: str, dest: Path, num_chunks: int, chunk_pool: ThreadPoolExecutor
 ) -> None:
     """Download a file using multiple parallel connections (Range requests).
 
-    All chunk downloads are submitted to *pool* (shared across files).
-    Falls back to single-connection download if the server doesn't support
-    Range requests or if the file is too small to benefit from splitting.
+    Chunk downloads are submitted to *chunk_pool*.
+    Falls back to single-connection download if Range is not supported.
     """
     file_info = get_file_info(url)
 
@@ -143,11 +149,10 @@ def download_file(
         if hasattr(os, "ftruncate"):
             os.ftruncate(fd, file_size)
         else:
-            # Windows: seek to end and write a zero byte to extend the file.
             os.lseek(fd, file_size - 1, os.SEEK_SET)
             os.write(fd, b"\0")
 
-        # Split into chunks and download in parallel via the shared pool.
+        # Split into chunks and download in parallel.
         chunk_size = file_size // num_chunks
         lock = threading.Lock()  # Used only when os.pwrite is unavailable.
 
@@ -155,7 +160,7 @@ def download_file(
         for i in range(num_chunks):
             start = i * chunk_size
             end = file_size - 1 if i == num_chunks - 1 else (i + 1) * chunk_size - 1
-            fut = pool.submit(download_chunk, final_url, start, end, fd, lock)
+            fut = chunk_pool.submit(download_chunk, final_url, start, end, fd, lock)
             chunk_futures.append(fut)
 
         # Wait for all chunks and propagate the first error.
@@ -167,7 +172,7 @@ def download_file(
 
 
 def download_one(
-    name: str, url: str, expected_sha: str, pool: ThreadPoolExecutor
+    name: str, url: str, expected_sha: str, chunk_pool: ThreadPoolExecutor
 ) -> str:
     """Download and verify a single model file. Returns a status message."""
     dest = MODELS_DIR / name
@@ -183,7 +188,7 @@ def download_one(
 
     print(f"Downloading {name} ({CHUNKS_PER_FILE} connections)...", flush=True)
     try:
-        download_file(url, dest, CHUNKS_PER_FILE, pool)
+        download_file(url, dest, CHUNKS_PER_FILE, chunk_pool)
     except Exception as e:
         dest.unlink(missing_ok=True)
         raise RuntimeError(f"{name}: download failed — {e}")
@@ -203,31 +208,33 @@ def download_one(
 def main() -> int:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Single pool handles both file-level and chunk-level parallelism.
-    max_workers = len(MODELS) * CHUNKS_PER_FILE
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(download_one, name, url, sha, pool): name
-            for name, url, sha in MODELS
-        }
+    # Two pools, no deadlock:
+    #   file_pool  — runs download_one (submits to chunk_pool, waits)
+    #   chunk_pool — runs download_chunk (leaf tasks, never submits sub-tasks)
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES * CHUNKS_PER_FILE) as chunk_pool:
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_pool:
+            futures = {
+                file_pool.submit(download_one, name, url, sha, chunk_pool): name
+                for name, url, sha in MODELS
+            }
 
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                msg = future.result()
-                print(msg, flush=True)
-            except Exception as e:
-                # Cancel all pending futures immediately.
-                for f in futures:
-                    f.cancel()
-                print(
-                    f"\n{'=' * 50}\n"
-                    f"ERROR: {e}\n"
-                    f"{'=' * 50}",
-                    file=sys.stderr,
-                )
-                pool.shutdown(wait=False, cancel_futures=True)
-                return 1
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    msg = future.result()
+                    print(msg, flush=True)
+                except Exception as e:
+                    for f in futures:
+                        f.cancel()
+                    print(
+                        f"\n{'=' * 50}\n"
+                        f"ERROR: {e}\n"
+                        f"{'=' * 50}",
+                        file=sys.stderr,
+                    )
+                    chunk_pool.shutdown(wait=False, cancel_futures=True)
+                    file_pool.shutdown(wait=False, cancel_futures=True)
+                    return 1
 
     print(f"\nAll models ready in {MODELS_DIR}/")
     return 0
