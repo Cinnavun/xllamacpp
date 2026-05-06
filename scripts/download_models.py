@@ -11,11 +11,12 @@ import os
 import sys
 import threading
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 MODELS_DIR = Path("models")
 CHUNKS_PER_FILE = 4  # Number of parallel connections per file download.
+READ_CHUNK_SIZE = 1 << 23  # 8 MB — buffer size for network reads / disk writes.
 
 # (filename, url, sha256)
 MODELS = [
@@ -68,7 +69,7 @@ def sha256_file(path: Path) -> str:
         if hasattr(hashlib, "file_digest"):
             return hashlib.file_digest(f, "sha256").hexdigest()
         h = hashlib.sha256()
-        while chunk := f.read(1 << 23):  # 8 MB
+        while chunk := f.read(READ_CHUNK_SIZE):
             h.update(chunk)
         return h.hexdigest()
 
@@ -91,74 +92,83 @@ def get_file_info(url: str) -> tuple[str, int] | None:
     return None
 
 
-def download_chunk(url: str, start: int, end: int, fd: int) -> None:
-    """Download a byte range and write to fd at the correct offset using pwrite.
+def _write_at(fd: int, data: bytes, offset: int, lock: threading.Lock) -> None:
+    """Write *data* at *offset* into *fd*, cross-platform.
 
-    os.pwrite is atomic w.r.t. offset — no seek+write race between threads.
+    Uses os.pwrite when available (atomic positional write).
+    Falls back to lock + lseek + write otherwise (e.g. Windows).
     """
+    if hasattr(os, "pwrite"):
+        os.pwrite(fd, data, offset)
+    else:
+        with lock:
+            os.lseek(fd, offset, os.SEEK_SET)
+            os.write(fd, data)
+
+
+def download_chunk(
+    url: str, start: int, end: int, fd: int, lock: threading.Lock
+) -> None:
+    """Download a byte range and write to fd at the correct offset."""
     req = urllib.request.Request(url)
     req.add_header("Range", f"bytes={start}-{end}")
     with urllib.request.urlopen(req, timeout=300) as resp:
         offset = start
-        while data := resp.read(1 << 20):  # 1 MB
-            os.pwrite(fd, data, offset)
+        while data := resp.read(READ_CHUNK_SIZE):
+            _write_at(fd, data, offset, lock)
             offset += len(data)
 
 
-def download_file(url: str, dest: Path, num_chunks: int = CHUNKS_PER_FILE) -> None:
+def download_file(
+    url: str, dest: Path, num_chunks: int, pool: ThreadPoolExecutor
+) -> None:
     """Download a file using multiple parallel connections (Range requests).
 
+    All chunk downloads are submitted to *pool* (shared across files).
     Falls back to single-connection download if the server doesn't support
     Range requests or if the file is too small to benefit from splitting.
     """
     file_info = get_file_info(url)
 
     # Fallback: single connection (server doesn't support Range, or tiny file).
-    min_chunk_size = 1 << 20  # 1 MB — don't split files smaller than this.
-    if file_info is None or file_info[1] < min_chunk_size * num_chunks:
+    if file_info is None or file_info[1] < READ_CHUNK_SIZE * num_chunks:
         urllib.request.urlretrieve(url, dest)
         return
 
     final_url, file_size = file_info
 
-    # Pre-allocate the file and keep a single fd open for all threads.
+    # Pre-allocate the file.
     fd = os.open(str(dest), os.O_CREAT | os.O_RDWR | os.O_TRUNC)
     try:
-        os.ftruncate(fd, file_size)
+        if hasattr(os, "ftruncate"):
+            os.ftruncate(fd, file_size)
+        else:
+            # Windows: seek to end and write a zero byte to extend the file.
+            os.lseek(fd, file_size - 1, os.SEEK_SET)
+            os.write(fd, b"\0")
 
-        # Split into chunks and download in parallel.
+        # Split into chunks and download in parallel via the shared pool.
         chunk_size = file_size // num_chunks
-        ranges = []
+        lock = threading.Lock()  # Used only when os.pwrite is unavailable.
+
+        chunk_futures: list[Future[None]] = []
         for i in range(num_chunks):
             start = i * chunk_size
             end = file_size - 1 if i == num_chunks - 1 else (i + 1) * chunk_size - 1
-            ranges.append((start, end))
+            fut = pool.submit(download_chunk, final_url, start, end, fd, lock)
+            chunk_futures.append(fut)
 
-        errors: list[Exception] = []
-
-        def _download_range(start: int, end: int) -> None:
-            try:
-                download_chunk(final_url, start, end, fd)
-            except Exception as e:
-                errors.append(e)
-
-        threads = []
-        for start, end in ranges:
-            t = threading.Thread(target=_download_range, args=(start, end))
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join()
+        # Wait for all chunks and propagate the first error.
+        done, _ = wait(chunk_futures)
+        for fut in done:
+            fut.result()  # Raises if the chunk failed.
     finally:
         os.close(fd)
 
-    if errors:
-        dest.unlink(missing_ok=True)
-        raise RuntimeError(f"chunk download failed: {errors[0]}")
 
-
-def download_one(name: str, url: str, expected_sha: str) -> str:
+def download_one(
+    name: str, url: str, expected_sha: str, pool: ThreadPoolExecutor
+) -> str:
     """Download and verify a single model file. Returns a status message."""
     dest = MODELS_DIR / name
 
@@ -173,7 +183,7 @@ def download_one(name: str, url: str, expected_sha: str) -> str:
 
     print(f"Downloading {name} ({CHUNKS_PER_FILE} connections)...", flush=True)
     try:
-        download_file(url, dest, CHUNKS_PER_FILE)
+        download_file(url, dest, CHUNKS_PER_FILE, pool)
     except Exception as e:
         dest.unlink(missing_ok=True)
         raise RuntimeError(f"{name}: download failed — {e}")
@@ -193,9 +203,11 @@ def download_one(name: str, url: str, expected_sha: str) -> str:
 def main() -> int:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    with ThreadPoolExecutor(max_workers=len(MODELS)) as executor:
+    # Single pool handles both file-level and chunk-level parallelism.
+    max_workers = len(MODELS) * CHUNKS_PER_FILE
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            executor.submit(download_one, name, url, sha): name
+            pool.submit(download_one, name, url, sha, pool): name
             for name, url, sha in MODELS
         }
 
@@ -214,7 +226,7 @@ def main() -> int:
                     f"{'=' * 50}",
                     file=sys.stderr,
                 )
-                executor.shutdown(wait=False, cancel_futures=True)
+                pool.shutdown(wait=False, cancel_futures=True)
                 return 1
 
     print(f"\nAll models ready in {MODELS_DIR}/")
