@@ -181,7 +181,7 @@ def download_one(
     if dest.exists():
         actual = sha256_file(dest)
         if actual == expected_sha:
-            return f"✓ {name} (already exists, verified)"
+            return f"[ok] {name} (already exists, verified)"
         else:
             print(f"  {name}: SHA256 mismatch, redownloading...", flush=True)
             dest.unlink()
@@ -191,7 +191,7 @@ def download_one(
         download_file(url, dest, CHUNKS_PER_FILE, chunk_pool)
     except Exception as e:
         dest.unlink(missing_ok=True)
-        raise RuntimeError(f"{name}: download failed — {e}")
+        raise RuntimeError(f"{name}: download failed -- {e}")
 
     actual = sha256_file(dest)
     if actual != expected_sha:
@@ -202,7 +202,7 @@ def download_one(
             f"  Got:      {actual}"
         )
 
-    return f"  ✓ {name} downloaded and verified"
+    return f"  [ok] {name} downloaded and verified"
 
 
 def main() -> int:
