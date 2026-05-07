@@ -247,12 +247,6 @@ jobs:
              rustup show
            fi
 
-      - name: Setup MSVC for ARM64 (Windows ARM64)
-        if: runner.os == 'Windows' && runner.arch == 'ARM64'
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: arm64
-
       - name: System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -295,6 +289,7 @@ jobs:
           XLLAMACPP_BUILD_VULKAN: "1"
           VERSIONEER_CLOSEST_TAG_ONLY: "1"
           VERBOSE: "1"
+          CMAKE_ARGS: ${{ runner.arch == 'ARM64' && '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++' || '' }}
         run: |
           python --version
           printenv
