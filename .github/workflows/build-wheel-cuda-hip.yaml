@@ -205,6 +205,7 @@ jobs:
 
       - name: System Dependencies (Windows)
         if: runner.os == 'Windows'
+        shell: bash
         env:
           RUNNER_ARCH: ${{ runner.arch }}
         run: |
