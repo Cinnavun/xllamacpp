@@ -483,6 +483,20 @@ jobs:
           export XLLAMACPP_BUILD_CUDA=1
           export VERSIONEER_CLOSEST_TAG_ONLY=1
           export VERBOSE=1
+
+          # CRITICAL: Use the SYSTEM compiler (GCC 11/12 on Ubuntu 22.04) instead
+          # of conda's GCC 14.3 for both CMake and wheel builds. Conda installs
+          # GCC 14.3 as a dependency of the CUDA toolkit, but its libstdc++ provides
+          # CXXABI_1.3.15 symbols that are NOT available on most deployment targets
+          # (which typically only have CXXABI_1.3.13). System GCC 11/12 uses only
+          # CXXABI_1.3.13 symbols, ensuring broad runtime compatibility.
+          # The system GCC fully supports C++17 which is all that's needed.
+          export CC=/usr/bin/gcc
+          export CXX=/usr/bin/g++
+          # CMAKE_ARGS is picked up by scripts/setup.sh to pass to CMake
+          export CMAKE_ARGS="-DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++"
+          echo "=== Forcing system compiler to avoid CXXABI_1.3.15 dependency ==="
+          $CXX --version
           
           make
           python -m build --wheel
