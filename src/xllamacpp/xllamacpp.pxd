@@ -89,6 +89,7 @@ cdef extern from "ggml.h":
         # GGML_TYPE_IQ4_NL_8_8 = 38,
         GGML_TYPE_MXFP4 # MXFP4 (1 block)
         GGML_TYPE_NVFP4 # NVFP4 (4 blocks, E4M3 scale)
+        GGML_TYPE_Q1_0
         GGML_TYPE_COUNT
 
 
@@ -122,6 +123,7 @@ cdef extern from "ggml-backend.h":
         GGML_BACKEND_DEVICE_TYPE_IGPU
         # accelerator devices intended to be used together with the CPU backend (e.g. BLAS or AMX)
         GGML_BACKEND_DEVICE_TYPE_ACCEL
+        GGML_BACKEND_DEVICE_TYPE_META
 
     # functionality supported by the device
     ctypedef struct ggml_backend_dev_caps:
@@ -154,6 +156,8 @@ cdef extern from "ggml-backend.h":
         ggml_backend_dev_caps caps
 
     ctypedef bint (*ggml_backend_sched_eval_callback)(ggml_tensor * t, bint ask, void * user_data)
+
+    ctypedef bint (*ggml_abort_callback)(void *)
 
     ctypedef struct ggml_backend_device: pass
 
@@ -197,6 +201,7 @@ cdef extern from "llama.h":
         LLAMA_SPLIT_MODE_NONE   # single GPU
         LLAMA_SPLIT_MODE_LAYER  # split layers and KV across GPUs
         LLAMA_SPLIT_MODE_ROW    # split layers and KV across GPUs, use tensor parallelism if supported
+        LLAMA_SPLIT_MODE_TENSOR
 
     cpdef enum llama_model_kv_override_type:
         LLAMA_KV_OVERRIDE_TYPE_INT
@@ -222,6 +227,21 @@ cdef extern from "llama.h":
 
     ctypedef bint (*llama_progress_callback)(float progress, void * user_data);
 
+    ctypedef struct llama_sampler_seq_config: pass
+
+    ctypedef struct llama_context_params: pass
+
+
+#------------------------------------------------------------------------------
+# build-info.h
+
+cdef extern from "build-info.h":
+
+    int llama_build_number()
+    const char * llama_commit()
+    const char * llama_compiler()
+    const char * llama_build_target()
+
 
 #------------------------------------------------------------------------------
 # common.h
@@ -240,17 +260,9 @@ cdef extern from "common.h":
     ctypedef struct common_control_vector_load_info: pass
 
     # -------------------------------------------------------------------------
-    # Build info
-
-    cdef int LLAMA_BUILD_NUMBER
-    cdef const char * LLAMA_COMMIT
-    cdef const char * LLAMA_COMPILER
-    cdef const char * LLAMA_BUILD_TARGET
-
-    # -------------------------------------------------------------------------
     # CPU utils
 
-    ctypedef struct cpu_params:
+    ctypedef struct common_cpu_params:
         int      n_threads
         bint     cpumask[GGML_MAX_N_THREADS] # CPU affinity mask.
         bint     mask_valid             # Default: any CPU
@@ -285,6 +297,19 @@ cdef extern from "common.h":
         std_string value
         bint at_start
         llama_token token
+
+    cpdef enum common_grammar_type:
+        COMMON_GRAMMAR_TYPE_NONE
+        COMMON_GRAMMAR_TYPE_USER
+        COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
+        COMMON_GRAMMAR_TYPE_TOOL_CALLS
+
+    cdef cppclass common_grammar:
+        common_grammar_type type
+        std_string grammar
+        common_grammar()
+        common_grammar(common_grammar_type t, std_string g)
+        bint empty()
 
     cpdef enum  common_params_sampling_config:
         COMMON_PARAMS_SAMPLING_CONFIG_SAMPLERS
@@ -339,7 +364,7 @@ cdef extern from "common.h":
 
         std_vector[common_sampler_type] samplers
 
-        std_string grammar # optional BNF-like grammar to constrain sampling
+        common_grammar                      grammar           # optional grammar constraint (user / output-format / tool-calls)
         bint                                grammar_lazy
         std_vector[common_grammar_trigger]  grammar_triggers  # optional triggers (for lazy grammars)
         std_set[llama_token]                preserved_tokens
@@ -347,13 +372,19 @@ cdef extern from "common.h":
         std_vector[llama_logit_bias] logit_bias      # logit biases to apply
         std_vector[llama_logit_bias] logit_bias_eog  # pre-calculated logit biases for EOG tokens
 
+        # The assistant generation prompt already prefilled into the prompt.
+        # Fed to the grammar sampler (to advance past pre-existing tokens) and used
+        # to determine the reasoning budget sampler's initial state.
+        # Only applied when the grammar is of output-format or tool-calls type.
+        std_string generation_prompt
+
         # reasoning budget sampler parameters
         # these are populated by the server/CLI based on chat template params
         int32_t  reasoning_budget_tokens   # -1 = disabled, >= 0 = token budget
-        bint     reasoning_budget_activate_immediately
         std_vector[llama_token] reasoning_budget_start  # start tag token sequence
         std_vector[llama_token] reasoning_budget_end    # end tag token sequence
         std_vector[llama_token] reasoning_budget_forced # forced sequence (message + end tag)
+        std_string              reasoning_budget_message  # message injected before end tag when budget exhausted
 
         bint backend_sampling
 
@@ -381,37 +412,60 @@ cdef extern from "common.h":
     ctypedef struct common_ngram_mod
     ctypedef struct llama_model
 
-    ctypedef struct common_params_speculative:
-        common_speculative_type type    # type of speculative decoding
-        
-        # general-purpose speculative decoding parameters
+    # draft-model-based speculative decoding parameters
+    ctypedef struct common_params_speculative_draft:
         int32_t n_max   # maximum number of tokens to draft during speculative decoding
         int32_t n_min   # minimum number of draft tokens to use for speculative decoding
-        float   p_split # speculative decoding split probability
-        float   p_min   # minimum speculative decoding probability (greedy)
-        
-        # ngram-based speculative decoding
-        uint16_t ngram_size_n     # ngram size for lookup
-        uint16_t ngram_size_m     # mgram size for speculative tokens
-        uint16_t ngram_min_hits   # minimum hits at ngram/mgram lookup for mgram to be proposed
-        # common_ngram_mod * ngram_mod  # ngram modification (runtime only, filled according to ngram_size_n, not exposed to Python)
-        
-        std_string lookup_cache_static   # path of static ngram cache file for lookup decoding
-        std_string lookup_cache_dynamic  # path of dynamic ngram cache file for lookup decoding
-        
-        # draft-model speculative decoding
-        common_params_model mparams_dft  # draft model parameters
-        # llama_model * model_dft         # a llama_model that can be shared by multiple speculative contexts (runtime only, not exposed to Python)
-        # llama_context_params cparams_dft  # parameters for the draft llama_context (runtime only, not exposed to Python)
+
+        float p_split   # speculative decoding split probability
+        float p_min     # minimum speculative decoding probability (greedy)
+
+        common_params_model mparams  # draft model parameters
+
+        llama_model * model  # a llama_model that can be shared by multiple speculative contexts (runtime only)
+
+        llama_context_params cparams  # parameters for the draft llama_context (runtime only)
+
         int32_t n_ctx         # draft context size
         int32_t n_gpu_layers  # number of layers to store in VRAM for the draft model (-1 - use default)
+
         ggml_type cache_type_k  # KV cache data type for the K
         ggml_type cache_type_v  # KV cache data type for the V
-        cpu_params cpuparams
-        cpu_params cpuparams_batch
+
+        common_cpu_params cpuparams
+        common_cpu_params cpuparams_batch
+
         std_vector[ggml_backend_dev_t] devices  # devices to use for offloading
+
         std_vector[std_pair[std_string, std_string]] replacements  # main to speculative model replacements
         std_vector[llama_model_tensor_buft_override] tensor_buft_overrides
+
+    ctypedef struct common_params_speculative_ngram_mod:
+        int32_t n_match
+        int32_t n_max
+        int32_t n_min
+        # std::shared_ptr<common_ngram_mod> obj  # runtime only, not exposed to Python
+
+    ctypedef struct common_params_speculative_ngram_map:
+        uint16_t size_n    # ngram size for lookup
+        uint16_t size_m    # mgram size for speculative tokens
+        uint16_t min_hits  # minimum hits at ngram/mgram lookup for mgram to be proposed
+
+    ctypedef struct common_params_speculative_ngram_cache:
+        std_string lookup_cache_static   # path of static ngram cache file for lookup decoding
+        std_string lookup_cache_dynamic  # path of dynamic ngram cache file for lookup decoding
+
+    ctypedef struct common_params_speculative:
+        common_speculative_type type    # type of speculative decoding
+
+        common_params_speculative_draft draft
+
+        common_params_speculative_ngram_mod ngram_mod
+        common_params_speculative_ngram_map ngram_simple
+        common_params_speculative_ngram_map ngram_map_k
+        common_params_speculative_ngram_map ngram_map_k4v
+
+        common_params_speculative_ngram_cache ngram_cache
 
 
     ctypedef struct common_params_vocoder:
@@ -470,6 +524,7 @@ cdef extern from "common.h":
         int32_t main_gpu           # the GPU that is used for scratch and small tensors
         float   tensor_split[128]  # how split tensors should be distributed across GPUs
         bint    fit_params         # whether to fit unset model/context parameters to free device memory
+        bint    fit_params_print   # print the estimated required memory to run the model
         int32_t fit_params_min_ctx # minimum context size to set when trying to reduce memory use
 
         # margin per device in bytes for fitting parameters to free memory:
@@ -477,8 +532,8 @@ cdef extern from "common.h":
 
         llama_split_mode        split_mode         # how to split the model across GPUs
 
-        cpu_params cpuparams
-        cpu_params cpuparams_batch
+        common_cpu_params cpuparams
+        common_cpu_params cpuparams_batch
 
         ggml_backend_sched_eval_callback cb_eval
         void * cb_eval_user_data
@@ -602,11 +657,13 @@ cdef extern from "common.h":
 
         # server params
         int32_t port                # server listens on this network port
+        bint    reuse_port          # allow multiple sockets to bind to the same port
         int32_t timeout_read        # http read timeout in seconds
         int32_t timeout_write       # http write timeout in seconds
         int32_t n_threads_http      # number of threads to process HTTP requests (TODO: support threadpool)
         int32_t n_cache_reuse       # min chunk size to reuse from the cache via KV shifting
         bint    cache_prompt        # whether to enable prompt caching
+        bint    cache_idle_slots    # save and clear idle slots upon starting a new task
         int32_t n_ctx_checkpoints   # max number of context checkpoints per slot
         int32_t checkpoint_every_nt   # make a checkpoint every n tokens during prefill
         int32_t cache_ram_mib       # -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
@@ -617,11 +674,10 @@ cdef extern from "common.h":
         std_string chat_template
         bint use_jinja
         bint enable_chat_template
+        bint force_pure_content_parser
 
         common_reasoning_format reasoning_format
         int32_t enable_reasoning    # -1 = auto, 0 = disable, 1 = enable
-        int32_t reasoning_budget
-        std_string reasoning_budget_message  # message injected before end tag when budget exhausted
         bint prefill_assistant      # if true, any trailing assistant message will be prefilled into the response
         int32_t sleep_idle_seconds  # if >0, server will sleep after this many seconds of idle time
 
@@ -640,6 +696,9 @@ cdef extern from "common.h":
         bint endpoint_slots
         bint endpoint_props
         bint endpoint_metrics
+
+        # enable built-in tools
+        std_vector[std_string] server_tools
 
         # router server configs
         std_string models_dir    # directory containing models for the router server
@@ -704,6 +763,7 @@ cdef extern from "common.h":
         # return false from callback to abort model loading or true to continue
         llama_progress_callback load_progress_callback
         void *                  load_progress_callback_user_data
+        bint no_alloc # Don't allocate model buffers
 
 
     

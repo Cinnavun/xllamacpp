@@ -25,15 +25,19 @@ build_llamacpp() {
     "-DLLAMA_LLGUIDANCE=ON"
   )
 
-  # Add BoringSSL for Windows and macOS only, use system OpenSSL on Linux
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    echo "Using system OpenSSL on Linux"
-    cmake_args+=("-DLLAMA_OPENSSL=ON")  # Use system OpenSSL on Linux
-    cmake_args+=("-DLLAMA_BUILD_BORINGSSL=OFF")
+  # Use BoringSSL (static linking) on all platforms for maximum portability
+  echo "Using BoringSSL (static linking)"
+  cmake_args+=("-DLLAMA_BUILD_BORINGSSL=ON")
+  cmake_args+=("-DLLAMA_OPENSSL=OFF")
+
+  # Release builds on non-macOS: disable native CPU optimizations for portability
+  # macOS: always enable native optimizations (same CPU per architecture)
+  # User self-builds: enable native CPU optimizations for best performance (CMake default)
+  if [[ -n "${XLLAMACPP_RELEASE:-}" && "$(uname -s)" != "Darwin" ]]; then
+    echo "Release mode: disabling native CPU optimizations for portability"
+    cmake_args+=("-DGGML_NATIVE=OFF")
   else
-    echo "Using BoringSSL on Windows/macOS"
-    cmake_args+=("-DLLAMA_BUILD_BORINGSSL=ON")
-    cmake_args+=("-DLLAMA_OPENSSL=OFF")  # Ensure cpp-httplib uses BoringSSL, not system OpenSSL
+    echo "Optimizing for native CPU (GGML_NATIVE=ON by default)"
   fi
 
   # Add any additional CMake arguments from environment
@@ -42,7 +46,7 @@ build_llamacpp() {
   fi
 
   # Build targets
-  local targets=("common" "llama" "ggml" "ggml-cpu" "mtmd" "cpp-httplib" "server-context" "llama-server")
+  local targets=("llama-common-base" "llama-common" "llama" "ggml" "ggml-cpu" "mtmd" "cpp-httplib" "server-context" "llama-server")
   
   if [[ -n "${XLLAMACPP_BUILD_CUDA}" ]]; then
     echo "Building for CUDA"
@@ -64,7 +68,6 @@ build_llamacpp() {
     echo "Using CUDA architectures: ${cuda_archs}"
 
     cmake_args+=(
-      "-DGGML_NATIVE=OFF"
       "-DGGML_CUDA=ON"
       "-DGGML_CUDA_FORCE_MMQ=ON"
 	  "-DCMAKE_CUDA_ARCHITECTURES=${cuda_archs}"
@@ -73,7 +76,6 @@ build_llamacpp() {
   elif [[ -n "${XLLAMACPP_BUILD_HIP}" ]]; then
     echo "Building for AMD GPU"
     cmake_args+=(
-      "-DGGML_NATIVE=OFF"
       "-DAMDGPU_TARGETS=gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032"
       "-DCMAKE_HIP_COMPILER=$(hipconfig -l)/clang"
       "-DGGML_HIP_ROCWMMA_FATTN=ON"
@@ -97,7 +99,6 @@ build_llamacpp() {
     else
       echo "Building with Vulkan"
       cmake_args+=(
-        "-DGGML_NATIVE=OFF"
         "-DGGML_VULKAN=ON"
       )
       targets+=("ggml-vulkan")
@@ -105,7 +106,6 @@ build_llamacpp() {
   elif [[ -n "${XLLAMACPP_BUILD_AARCH64}" ]]; then
     echo "Building for aarch64"
     cmake_args+=(
-      "-DGGML_NATIVE=OFF"
       "-DGGML_CPU_ARM_ARCH=armv8-a"
     )
     # Add ggml-blas target if BLAS is enabled via CMAKE_ARGS
@@ -126,7 +126,7 @@ build_llamacpp() {
         targets+=("ggml-blas" "ggml-metal")
       fi
     else
-      echo "Building for non-MacOS CPU (optimize for native CPU)"
+      echo "Building for non-MacOS CPU"
       # Let CMake handle GGML_BLAS from environment
       if [[ "${CMAKE_ARGS:-}" == *"-DGGML_BLAS=ON"* ]]; then
         echo "BLAS is enabled via CMAKE_ARGS, adding ggml-blas to build targets"
@@ -139,8 +139,18 @@ build_llamacpp() {
   echo "Running CMake with arguments: ${cmake_args[*]}"
   echo "Building targets: ${targets[*]}"
 
-  cmake .. "${cmake_args[@]}" && \
+  cmake .. "${cmake_args[@]}"
+  if [ $? -ne 0 ]; then
+    echo "ERROR: CMake configure failed. Aborting build."
+    exit 1
+  fi
+
   cmake --build . --config Release -j ${NPROC} --target "${targets[@]}"
+  if [ $? -ne 0 ]; then
+    echo "ERROR: CMake build failed. Aborting build."
+    exit 1
+  fi
+
   rm -rf ${PREFIX}
   python ${CWD}/scripts/copy_libs.py
   cd ${CWD}

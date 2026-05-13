@@ -1,3 +1,4 @@
+import os
 import pytest
 from pytest import approx
 
@@ -28,10 +29,6 @@ def test_common_params_sampling():
     params.sampling.reasoning_budget_tokens = 100
     assert params.sampling.reasoning_budget_tokens == 100
 
-    assert params.sampling.reasoning_budget_activate_immediately is False
-    params.sampling.reasoning_budget_activate_immediately = True
-    assert params.sampling.reasoning_budget_activate_immediately is True
-
     assert params.sampling.reasoning_budget_start == []
     params.sampling.reasoning_budget_start = [1, 2, 3]
     assert params.sampling.reasoning_budget_start == [1, 2, 3]
@@ -43,6 +40,11 @@ def test_common_params_sampling():
     assert params.sampling.reasoning_budget_forced == []
     params.sampling.reasoning_budget_forced = [7, 8, 9]
     assert params.sampling.reasoning_budget_forced == [7, 8, 9]
+
+    # Test new generation_prompt field
+    assert params.sampling.generation_prompt == ""
+    params.sampling.generation_prompt = "<think>"
+    assert params.sampling.generation_prompt == "<think>"
 
     # assert params.seed == xlc.LLAMA_DEFAULT_SEED
     # assert params.n_prev == 64
@@ -77,13 +79,14 @@ def test_enum_values():
     assert xlc.GGML_ROPE_TYPE_VISION == 24
     assert xlc.ggml_sched_priority.GGML_SCHED_PRIO_REALTIME == 3
     assert xlc.ggml_numa_strategy.GGML_NUMA_STRATEGY_COUNT == 5
-    assert xlc.ggml_type.GGML_TYPE_COUNT == 41
+    assert xlc.ggml_type.GGML_TYPE_COUNT == 42
     assert xlc.ggml_backend_dev_type.GGML_BACKEND_DEVICE_TYPE_ACCEL == 3
     assert xlc.llama_rope_scaling_type.LLAMA_ROPE_SCALING_TYPE_MAX_VALUE == 3
     assert xlc.llama_pooling_type.LLAMA_POOLING_TYPE_RANK == 4
     assert xlc.llama_attention_type.LLAMA_ATTENTION_TYPE_NON_CAUSAL == 1
     assert xlc.llama_flash_attn_type.LLAMA_FLASH_ATTN_TYPE_ENABLED == 1
     assert xlc.llama_split_mode.LLAMA_SPLIT_MODE_ROW == 2
+    assert xlc.llama_split_mode.LLAMA_SPLIT_MODE_TENSOR == 3
     assert xlc.llama_model_kv_override_type.LLAMA_KV_OVERRIDE_TYPE_STR == 3
     assert xlc.dimre_method.DIMRE_METHOD_MEAN == 1
     assert xlc.common_conversation_mode.COMMON_CONVERSATION_MODE_AUTO == 2
@@ -167,8 +170,8 @@ def test_common_params():
     assert params.path_prompt_cache == ""
     assert params.input_prefix == ""
     assert params.input_suffix == ""
-    assert params.speculative.lookup_cache_static == ""
-    assert params.speculative.lookup_cache_dynamic == ""
+    assert params.speculative.ngram_cache.lookup_cache_static == ""
+    assert params.speculative.ngram_cache.lookup_cache_dynamic == ""
     assert params.logits_file == ""
 
     # Test new debug properties
@@ -246,6 +249,9 @@ def test_common_params():
     assert params.embd_sep == "\n"
 
     assert params.port == 0
+    assert params.reuse_port is False
+    params.reuse_port = True
+    assert params.reuse_port is True
     assert params.timeout_read == 600
     assert params.timeout_write == 600
     assert params.n_threads_http == -1
@@ -253,6 +259,9 @@ def test_common_params():
     assert params.cache_prompt is True
     params.cache_prompt = False
     assert params.cache_prompt is False
+    assert params.cache_idle_slots is True
+    params.cache_idle_slots = False
+    assert params.cache_idle_slots is False
     assert params.n_ctx_checkpoints == 32
     assert params.checkpoint_every_nt == 8192
     params.checkpoint_every_nt = 100
@@ -267,6 +276,9 @@ def test_common_params():
     params.use_jinja = False
     assert params.use_jinja is False
     assert params.enable_chat_template is True
+    assert params.force_pure_content_parser is False
+    params.force_pure_content_parser = True
+    assert params.force_pure_content_parser is True
     assert (
         params.reasoning_format
         == xlc.common_reasoning_format.COMMON_REASONING_FORMAT_DEEPSEEK
@@ -290,6 +302,11 @@ def test_common_params():
     assert params.endpoint_slots is True
     assert params.endpoint_props is False
     assert params.endpoint_metrics is False
+
+    # Test new server_tools field
+    assert params.server_tools == []
+    params.server_tools = ["tool1", "tool2"]
+    assert params.server_tools == ["tool1", "tool2"]
 
     assert params.log_json is False
 
@@ -329,6 +346,9 @@ def test_common_params():
     assert params.fit_params is True
     params.fit_params = False
     assert params.fit_params is False
+    assert params.fit_params_print is False
+    params.fit_params_print = True
+    assert params.fit_params_print is True
     for x in params.fit_params_target:
         assert x == 1024 * 1024 * 1024
     params.fit_params_target = [1024]
@@ -338,6 +358,11 @@ def test_common_params():
     assert params.fit_params_min_ctx == 4096
     params.fit_params_min_ctx = 512
     assert params.fit_params_min_ctx == 512
+
+    # Test new no_alloc field
+    assert params.no_alloc is False
+    params.no_alloc = True
+    assert params.no_alloc is True
 
     # Test new sleep_idle_seconds field
     assert params.sleep_idle_seconds == -1
@@ -371,11 +396,11 @@ def test_common_params():
     assert params.sampling.samplers == sp
     params.sampling.samplers = "top_k;top_p;min_p;temperature;dry;typ_p;xtc"
     assert params.sampling.samplers == "top_k;top_p;min_p;temperature;dry;typ_p;xtc"
-    assert params.speculative.cache_type_k == xlc.ggml_type.GGML_TYPE_F16
-    assert params.speculative.cache_type_v == xlc.ggml_type.GGML_TYPE_F16
-    assert params.speculative.replacements == []
-    params.speculative.replacements = [("a", "b")]
-    assert params.speculative.replacements == [("a", "b")]
+    assert params.speculative.draft.cache_type_k == xlc.ggml_type.GGML_TYPE_F16
+    assert params.speculative.draft.cache_type_v == xlc.ggml_type.GGML_TYPE_F16
+    assert params.speculative.draft.replacements == []
+    params.speculative.draft.replacements = [("a", "b")]
+    assert params.speculative.draft.replacements == [("a", "b")]
 
     # Test new speculative type field
     assert (
@@ -388,39 +413,125 @@ def test_common_params():
         == xlc.common_speculative_type.COMMON_SPECULATIVE_TYPE_DRAFT
     )
 
-    # Test new ngram-based speculative decoding fields
-    assert params.speculative.ngram_size_n == 12
-    params.speculative.ngram_size_n = 8
-    assert params.speculative.ngram_size_n == 8
+    # Test new ngram-based speculative decoding fields (ngram_simple)
+    assert params.speculative.ngram_simple.size_n == 12
+    params.speculative.ngram_simple.size_n = 8
+    assert params.speculative.ngram_simple.size_n == 8
 
-    assert params.speculative.ngram_size_m == 48
-    params.speculative.ngram_size_m = 32
-    assert params.speculative.ngram_size_m == 32
+    assert params.speculative.ngram_simple.size_m == 48
+    params.speculative.ngram_simple.size_m = 32
+    assert params.speculative.ngram_simple.size_m == 32
 
-    assert params.speculative.ngram_min_hits == 1
-    params.speculative.ngram_min_hits = 3
-    assert params.speculative.ngram_min_hits == 3
+    assert params.speculative.ngram_simple.min_hits == 1
+    params.speculative.ngram_simple.min_hits = 3
+    assert params.speculative.ngram_simple.min_hits == 3
+
+    # Test ngram_mod fields
+    assert params.speculative.ngram_mod.n_match == 24
+    params.speculative.ngram_mod.n_match = 10
+    assert params.speculative.ngram_mod.n_match == 10
+
+    assert params.speculative.ngram_mod.n_max == 64
+    params.speculative.ngram_mod.n_max = 32
+    assert params.speculative.ngram_mod.n_max == 32
+
+    assert params.speculative.ngram_mod.n_min == 48
+    params.speculative.ngram_mod.n_min = 16
+    assert params.speculative.ngram_mod.n_min == 16
+
+    # Test ngram_map_k fields
+    assert params.speculative.ngram_map_k.size_n == 12
+    params.speculative.ngram_map_k.size_n = 8
+    assert params.speculative.ngram_map_k.size_n == 8
+
+    assert params.speculative.ngram_map_k.size_m == 48
+    params.speculative.ngram_map_k.size_m = 32
+    assert params.speculative.ngram_map_k.size_m == 32
+
+    assert params.speculative.ngram_map_k.min_hits == 1
+    params.speculative.ngram_map_k.min_hits = 2
+    assert params.speculative.ngram_map_k.min_hits == 2
+
+    # Test ngram_map_k4v fields
+    assert params.speculative.ngram_map_k4v.size_n == 12
+    params.speculative.ngram_map_k4v.size_n = 8
+    assert params.speculative.ngram_map_k4v.size_n == 8
+
+    assert params.speculative.ngram_map_k4v.size_m == 48
+    params.speculative.ngram_map_k4v.size_m = 32
+    assert params.speculative.ngram_map_k4v.size_m == 32
+
+    assert params.speculative.ngram_map_k4v.min_hits == 1
+    params.speculative.ngram_map_k4v.min_hits = 2
+    assert params.speculative.ngram_map_k4v.min_hits == 2
 
     # Test new p_split and p_min fields
-    assert params.speculative.p_split == approx(0.1)
-    params.speculative.p_split = 0.2
-    assert params.speculative.p_split == approx(0.2)
+    assert params.speculative.draft.p_split == approx(0.1)
+    params.speculative.draft.p_split = 0.2
+    assert params.speculative.draft.p_split == approx(0.2)
 
-    assert params.speculative.p_min == approx(0.75)
-    params.speculative.p_min = 0.8
-    assert params.speculative.p_min == approx(0.8)
+    assert params.speculative.draft.p_min == approx(0.75)
+    params.speculative.draft.p_min = 0.8
+    assert params.speculative.draft.p_min == approx(0.8)
 
-    # Test mparams_dft (draft model params)
-    assert params.speculative.mparams_dft.path == ""
-    assert params.speculative.mparams_dft.hf_repo == ""
-    assert params.speculative.mparams_dft.hf_file == ""
+    # Test draft model params
+    assert params.speculative.draft.mparams.path == ""
+    assert params.speculative.draft.mparams.hf_repo == ""
+    assert params.speculative.draft.mparams.hf_file == ""
+
+    # Test sub-struct wrapper properties
+    draft = params.speculative.draft
+    assert draft.n_max == params.speculative.draft.n_max
+    assert draft.n_min == params.speculative.draft.n_min
+    assert draft.p_split == approx(params.speculative.draft.p_split)
+    assert draft.p_min == approx(params.speculative.draft.p_min)
+    assert draft.mparams.path == ""
+    assert draft.n_ctx == params.speculative.draft.n_ctx
+    assert draft.n_gpu_layers == params.speculative.draft.n_gpu_layers
+    assert draft.cache_type_k == params.speculative.draft.cache_type_k
+    assert draft.cache_type_v == params.speculative.draft.cache_type_v
+
+    ngram_mod = params.speculative.ngram_mod
+    assert ngram_mod.n_match == params.speculative.ngram_mod.n_match
+    assert ngram_mod.n_max == params.speculative.ngram_mod.n_max
+    assert ngram_mod.n_min == params.speculative.ngram_mod.n_min
+    ngram_mod.n_match = 5
+    assert params.speculative.ngram_mod.n_match == 5
+
+    ngram_simple = params.speculative.ngram_simple
+    assert ngram_simple.size_n == params.speculative.ngram_simple.size_n
+    assert ngram_simple.size_m == params.speculative.ngram_simple.size_m
+    assert ngram_simple.min_hits == params.speculative.ngram_simple.min_hits
+    ngram_simple.size_n = 7
+    assert params.speculative.ngram_simple.size_n == 7
+
+    ngram_map_k = params.speculative.ngram_map_k
+    assert ngram_map_k.size_n == params.speculative.ngram_map_k.size_n
+    assert ngram_map_k.size_m == params.speculative.ngram_map_k.size_m
+    assert ngram_map_k.min_hits == params.speculative.ngram_map_k.min_hits
+
+    ngram_map_k4v = params.speculative.ngram_map_k4v
+    assert ngram_map_k4v.size_n == params.speculative.ngram_map_k4v.size_n
+    assert ngram_map_k4v.size_m == params.speculative.ngram_map_k4v.size_m
+    assert ngram_map_k4v.min_hits == params.speculative.ngram_map_k4v.min_hits
+
+    ngram_cache = params.speculative.ngram_cache
+    assert (
+        ngram_cache.lookup_cache_static
+        == params.speculative.ngram_cache.lookup_cache_static
+    )
+    assert (
+        ngram_cache.lookup_cache_dynamic
+        == params.speculative.ngram_cache.lookup_cache_dynamic
+    )
+    ngram_cache.lookup_cache_static = "/tmp/static.bin"
+    assert params.speculative.ngram_cache.lookup_cache_static == "/tmp/static.bin"
 
     assert params.cls_sep == "\t"
     assert params.offline is False
-    assert params.reasoning_budget == -1
-    assert params.reasoning_budget_message == ""
-    params.reasoning_budget_message = "Budget exhausted"
-    assert params.reasoning_budget_message == "Budget exhausted"
+    assert params.sampling.reasoning_budget_message == ""
+    params.sampling.reasoning_budget_message = "Budget exhausted"
+    assert params.sampling.reasoning_budget_message == "Budget exhausted"
 
     assert params.diffusion.steps == 128
     params.diffusion.steps = 13
@@ -472,6 +583,58 @@ def test_common_params():
     # assert params.batched_bench_output_jsonl is False
 
     # ... rest not yet implemented
+
+
+def test_common_grammar():
+    """Test CommonGrammar class."""
+    # Test default constructor
+    grammar = xlc.CommonGrammar()
+    assert grammar.type == xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_NONE
+    assert grammar.grammar == ""
+    assert grammar.empty() is True
+
+    # Test constructor with arguments using enum
+    grammar = xlc.CommonGrammar(
+        type=xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_USER, grammar="root ::= [a-z]+"
+    )
+    assert grammar.type == xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_USER
+    assert grammar.grammar == "root ::= [a-z]+"
+    assert grammar.empty() is False
+
+    # Test setters with enum
+    grammar.type = xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
+    assert grammar.type == xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
+    grammar.grammar = "root ::= [0-9]+"
+    assert grammar.grammar == "root ::= [0-9]+"
+
+    # Test __repr__
+    assert "CommonGrammar" in repr(grammar)
+    assert "type=" in repr(grammar)
+
+    # Test grammar property on CommonParamsSampling
+    params = xlc.CommonParams()
+    # Default grammar should be empty
+    assert params.sampling.grammar.empty() is True
+
+    # Set grammar via CommonGrammar object using enum
+    new_grammar = xlc.CommonGrammar(
+        type=xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_USER, grammar="root ::= [a-z]+"
+    )
+    params.sampling.grammar = new_grammar
+    assert (
+        params.sampling.grammar.type == xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_USER
+    )
+    assert params.sampling.grammar.grammar == "root ::= [a-z]+"
+    assert params.sampling.grammar.empty() is False
+
+    # Test modifying grammar properties with enum
+    params.sampling.grammar.type = (
+        xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
+    )
+    assert (
+        params.sampling.grammar.type
+        == xlc.common_grammar_type.COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT
+    )
 
 
 def test_json_schema_to_grammar():
@@ -538,3 +701,84 @@ def test_lora_adapters():
     # Clear adapters
     params.lora_adapters = []
     assert params.lora_adapters == []
+
+
+def test_llama_attn_rot_disable_env(model_path):
+    """Test that LLAMA_ATTN_ROT_DISABLE environment variable affects the logic."""
+    import subprocess
+    import sys
+
+    # Save original value
+    original_value = os.environ.get("LLAMA_ATTN_ROT_DISABLE")
+
+    try:
+        # Single test script that uses the environment variable as set by subprocess
+        test_script = """
+import os
+import sys
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = sys.argv[1]
+params.n_ctx = 256
+params.n_predict = 1
+params.warmup = False
+params.cpuparams.n_threads = 2
+params.cpuparams_batch.n_threads = 2
+params.cache_ram_mib = 0
+server = xlc.Server(params)
+"""
+        model_file = os.path.join(model_path, "Llama-3.2-1B-Instruct-Q8_0.gguf")
+
+        # Add current directory to PYTHONPATH so subprocess can find xllamacpp
+        pythonpath = os.pathsep.join([os.getcwd()] + sys.path)
+        base_env = {**os.environ, "PYTHONPATH": pythonpath}
+
+        # Test setting to 1 (disable rotation) - should log a warning
+        result = subprocess.run(
+            [sys.executable, "-c", test_script, model_file],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd(),
+            env={**base_env, "LLAMA_ATTN_ROT_DISABLE": "1"},
+        )
+        assert (
+            "attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)"
+            in result.stderr
+        ), f"Expected warning not found in stderr: {result.stderr}"
+
+        # Test setting to 0 (enable rotation, default behavior) - should not log the warning
+        result = subprocess.run(
+            [sys.executable, "-c", test_script, model_file],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd(),
+            env={**base_env, "LLAMA_ATTN_ROT_DISABLE": "0"},
+        )
+        assert (
+            "attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)"
+            not in result.stderr
+        ), f"Unexpected warning found in stderr: {result.stderr}"
+
+        # Test unsetting the variable (default behavior) - should not log the warning
+        env_without = {
+            k: v for k, v in base_env.items() if k != "LLAMA_ATTN_ROT_DISABLE"
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", test_script, model_file],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd(),
+            env=env_without,
+        )
+        assert (
+            "attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)"
+            not in result.stderr
+        ), f"Unexpected warning found in stderr: {result.stderr}"
+
+    finally:
+        # Restore original value
+        if original_value is not None:
+            os.environ["LLAMA_ATTN_ROT_DISABLE"] = original_value
+        else:
+            os.environ.pop("LLAMA_ATTN_ROT_DISABLE", None)

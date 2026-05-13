@@ -11,23 +11,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_wheels:
+  build_linux_wheels:
+    name: Build wheels on Linux ${{ matrix.arch }} (abi3)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            image: quay.io/pypa/manylinux2014_x86_64
+            platform-id: manylinux_x86_64
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            image: quay.io/pypa/manylinux2014_aarch64
+            platform-id: manylinux_aarch64
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build wheel in manylinux2014 container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            -e VERSIONEER_CLOSEST_TAG_ONLY=1 \
+            -e XLLAMACPP_RELEASE=1 \
+            -e XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }} \
+            ${{ matrix.image }} \
+            bash -c '
+              set -ex
+
+              # Mark the mounted workspace as safe for git (needed by versioneer)
+              git config --global --add safe.directory /workspace
+              # Use Python 3.10 for abi3 wheel (compatible with all Python 3.10+)
+              export PATH=/opt/python/cp310-cp310/bin:$PATH
+
+              # Install Rust toolchain (needed by llguidance)
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source $HOME/.cargo/env
+
+              # Install build dependencies
+              pip install -r requirements.txt
+
+              # Build llama.cpp and the extension
+              make
+
+              # Build the wheel
+              pip wheel . --no-deps --no-build-isolation -w /tmp/wheelhouse
+
+              # Repair the wheel with auditwheel
+              auditwheel show /tmp/wheelhouse/*.whl
+              auditwheel repair \
+                --exclude libstdc++.so.6 \
+                --exclude libgomp.so.1 \
+                -w /workspace/wheelhouse \
+                /tmp/wheelhouse/*.whl
+            '
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-abi3-${{ matrix.platform-id }}
+          path: wheelhouse/*.whl
+
+  build_other_wheels:
     name: Build wheels on ${{ matrix.os }} ${{ matrix.arch }} (abi3)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 - single abi3 wheel for all Python 3.10+
-          - os: ubuntu-latest
-            arch: auto
-            platform-id: manylinux_x86_64
-
-          # Linux aarch64 - single abi3 wheel for all Python 3.10+
-          - os: ubuntu-22.04-arm
-            arch: aarch64
-            platform-id: manylinux_aarch64
-
           # macOS x86_64 - single abi3 wheel for all Python 3.10+
           - os: macos-15-intel
             arch: x86_64
@@ -44,36 +100,34 @@ jobs:
             platform-id: win_amd64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           submodules: recursive
       
       - name: Add msbuild to PATH
         if: ${{ matrix.os == 'windows-latest'}}
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
         with:
           vs-version: '[17.13,17.14)'
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v3.4.0
+        uses: pypa/cibuildwheel@54a71d3375df80d84b6d4537d04614fec04e637f # v3.4.0
         env:
           VERSIONEER_CLOSEST_TAG_ONLY: 1
-          CIBW_SKIP: pp* *i686
+          CIBW_SKIP: "*i686"
           CIBW_ARCHS: ${{ matrix.arch }}
           # Build only cp310 for abi3 wheel (compatible with all Python 3.10+)
           CIBW_BUILD: cp310-*
           CIBW_TEST_REQUIRES: pytest requests pytest-asyncio pytest-timeout
-          CIBW_BEFORE_ALL_LINUX: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env && (yum install -y openssl-devel 2>/dev/null || apk add openssl-dev 2>/dev/null)
           CIBW_BEFORE_BUILD: pip install -r requirements.txt && make
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_ENVIRONMENT_LINUX: "PATH=$HOME/.cargo/bin:$PATH XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }}"
-          CIBW_ENVIRONMENT_MACOS: "XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }}"
-          CIBW_ENVIRONMENT_WINDOWS: "XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }}"
+          CIBW_ENVIRONMENT_MACOS: "XLLAMACPP_RELEASE=1 XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }}"
+          CIBW_ENVIRONMENT_WINDOWS: "XLLAMACPP_RELEASE=1 XLLAMACPP_BUILD_AARCH64=${{ matrix.arch == 'aarch64' && '1' || '' }}"
         with:
           package-dir: ./
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheel-abi3-${{ matrix.platform-id }}
           path: wheelhouse/*.whl
@@ -82,7 +136,7 @@ jobs:
     name: Build source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -90,40 +144,39 @@ jobs:
       - name: Build sdist
         run: pipx run build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts
           path: ./dist/*.tar.gz
 
   upload_pypi:
-    needs: [build_wheels, build_sdist]
+    needs: [build_linux_wheels, build_other_wheels, build_sdist]
     runs-on: ubuntu-latest
     # upload to PyPI on every tag starting with 'v'
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           pattern: 'wheel-*'
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           name: artifacts
 
       - name: Publish to PyPI
         if: github.repository == 'xorbitsai/xllamacpp'
-        uses: pypa/gh-action-pypi-publish@v1.12.4
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           user: __token__
           password: ${{ secrets.PYPI_PASSWORD }}
 
       - name: Publish to Test PyPI
         if: github.repository != 'xorbitsai/xllamacpp'
-        uses: pypa/gh-action-pypi-publish@v1.12.4
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           user: __token__
           password: ${{ secrets.TEST_PYPI_PASSWORD }}
-          verbose: true
           repository_url: https://test.pypi.org/legacy/

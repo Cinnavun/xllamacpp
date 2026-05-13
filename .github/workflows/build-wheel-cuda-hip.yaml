@@ -3,7 +3,7 @@ name: Build Wheels (CUDA & HIP)
 on:
   push:
     tags:
-      - '*'
+      - "*"
   workflow_dispatch:
 
 # on:
@@ -31,12 +31,12 @@ jobs:
         hip: ["6.3.4", "6.4.1"]
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
           tool-cache: false
-          
+
           # all of these default to true, but feel free to set to
           # "false" if necessary for your workflow
           android: true
@@ -48,13 +48,13 @@ jobs:
 
       - name: Clone
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: "recursive"
 
       - name: Set up Python ${{ matrix.pyver }}
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.pyver }}
 
@@ -63,7 +63,7 @@ jobs:
           # Get Python location from setup-python
           PYTHON_PATH=$(which python)
           PYTHON_HOME=$(dirname $(dirname $PYTHON_PATH))
-          
+
           # Start the container with Python from host mounted
           docker run -d \
             --name rocm-container \
@@ -73,7 +73,7 @@ jobs:
             -w /workspace \
             rocm/dev-ubuntu-22.04:${{ matrix.hip }} \
             sleep infinity
-          
+
           # Verify Python installation in container
           docker exec rocm-container python --version
           docker exec rocm-container pip --version
@@ -115,7 +115,8 @@ jobs:
           VERSIONEER_CLOSEST_TAG_ONLY: "1"
           VERBOSE: "1"
         run: |
-          docker exec -e XLLAMACPP_BUILD_HIP=$XLLAMACPP_BUILD_HIP \
+          docker exec -e XLLAMACPP_RELEASE=1 \
+                     -e XLLAMACPP_BUILD_HIP=$XLLAMACPP_BUILD_HIP \
                      -e VERSIONEER_CLOSEST_TAG_ONLY=$VERSIONEER_CLOSEST_TAG_ONLY \
                      -e VERBOSE=$VERBOSE \
                      rocm-container bash -l -c '
@@ -143,7 +144,7 @@ jobs:
           # Always stop and remove the container
           docker stop rocm-container || true
           docker rm rocm-container || true
-          
+
           # Check if any wheel files exist in the dist directory
           if [ -z "$(ls -A dist/*.whl 2>/dev/null)" ]; then
             echo "❌ No wheel files found in dist directory!"
@@ -151,7 +152,7 @@ jobs:
             ls -la dist/ 2>/dev/null || echo "No dist directory found"
             exit 1
           fi
-          
+
           echo "✅ Wheel files found in dist directory"
 
       # - uses: actions/upload-artifact@v4
@@ -160,7 +161,7 @@ jobs:
       #     path: ./dist/*.whl
       #     overwrite: true
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*
@@ -168,28 +169,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-
   build_wheels_vulkan:
     name: Build Wheel Vulkan ${{ matrix.os }} (abi3)
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: ["ubuntu-22.04", "macos-15-intel", "windows-2022"]
-        # Build only with Python 3.10 for abi3 wheel (compatible with all Python 3.10+)
+        os: ["ubuntu-22.04", "macos-15-intel", "windows-2022", "windows-11-arm"]
+        # Build with Python 3.10 for abi3 wheel (compatible with all Python 3.10+)
         pyver: ["3.10"]
         vulkan: ["1.4.313.2"]
+        exclude:
+          # Python 3.10 is not available for Windows ARM64
+          - os: "windows-11-arm"
+            pyver: "3.10"
+        include:
+          # Windows ARM64 requires Python 3.14+ (earliest ARM64 build available)
+          - os: "windows-11-arm"
+            pyver: "3.14"
+            vulkan: "1.4.313.2"
     env:
       VULKAN_VERSION: ${{ matrix.vulkan }}
     steps:
       - name: Clone
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: "recursive"
 
       - name: Set up Python ${{ matrix.pyver }}
         id: setup-python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.pyver }}
 
@@ -203,21 +212,56 @@ jobs:
 
       - name: System Dependencies (Windows)
         if: runner.os == 'Windows'
+        shell: bash
+        env:
+          RUNNER_ARCH: ${{ runner.arch }}
         run: |
-           curl -L https://github.com/skeeto/w64devkit/releases/download/v1.22.0/w64devkit-1.22.0.zip --output w64devkit.zip
-           unzip -q w64devkit.zip -d .
-           echo "$(pwd)/w64devkit/bin" >> $GITHUB_PATH
-           curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
-           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
-           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
-           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+          # Install w64devkit for x64 (MinGW toolchain, not available for ARM64)
+          if [ "$RUNNER_ARCH" = "X64" ]; then
+            curl -L https://github.com/skeeto/w64devkit/releases/download/v1.22.0/w64devkit-1.22.0.zip --output w64devkit.zip
+            unzip -q w64devkit.zip -d .
+            echo "$(pwd)/w64devkit/bin" >> $GITHUB_PATH
+          fi
+
+          # Determine Vulkan SDK platform code based on runner architecture
+          # runner.arch is "X64" or "ARM64"; LunarG uses "windows" for X64, "warm" for ARM64
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            VULKAN_PLATFORM="warm"
+          else
+            VULKAN_PLATFORM="windows"
+          fi
+
+          # Download and install Vulkan SDK
+          SDK_URL="https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/${VULKAN_PLATFORM}/vulkan_sdk.exe"
+          echo "Downloading Vulkan SDK from: $SDK_URL"
+          curl.exe -o "$RUNNER_TEMP/VulkanSDK-Installer.exe" -L "$SDK_URL"
+          "$RUNNER_TEMP/VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          echo "VULKAN_SDK=C:\VulkanSDK\\${VULKAN_VERSION}" >> $GITHUB_ENV
+          echo "C:\VulkanSDK\\${VULKAN_VERSION}\bin" >> $GITHUB_PATH
+
+          # Install Rust ARM64 target if needed
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            rustup target add aarch64-pc-windows-msvc
+            rustup show
+          fi
 
       - name: System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           # Download and install Vulkan SDK
           brew install cmake libomp vulkan-headers glslang molten-vk shaderc vulkan-loader vulkan-tools
-          vulkaninfo
+          # On headless CI runners, vulkaninfo needs an ICD file to avoid Abort trap: 6
+          # Try MoltenVK ICD first, fall back to mock ICD from vulkan-tools
+          MOLTENVK_ICD="$(brew --prefix molten-vk)/share/vulkan/icd.d/MoltenVK_icd.json"
+          MOCK_ICD="$(brew --prefix vulkan-tools)/lib/mock_icd/VkICD_mock_icd.json"
+          if [ -f "$MOLTENVK_ICD" ]; then
+            echo "VK_ICD_FILENAMES=$MOLTENVK_ICD" >> $GITHUB_ENV
+            export VK_ICD_FILENAMES="$MOLTENVK_ICD"
+          elif [ -f "$MOCK_ICD" ]; then
+            echo "VK_ICD_FILENAMES=$MOCK_ICD" >> $GITHUB_ENV
+            export VK_ICD_FILENAMES="$MOCK_ICD"
+          fi
+          vulkaninfo --summary || echo "Warning: vulkaninfo failed (expected on headless CI), continuing build..."
 
       - name: Setup Python environment
         run: |
@@ -239,9 +283,11 @@ jobs:
 
       - name: Build Wheel
         env:
+          XLLAMACPP_RELEASE: "1"
           XLLAMACPP_BUILD_VULKAN: "1"
           VERSIONEER_CLOSEST_TAG_ONLY: "1"
           VERBOSE: "1"
+          CMAKE_ARGS: ${{ runner.arch == 'ARM64' && '-G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release' || '' }}
         run: |
           python --version
           printenv
@@ -275,7 +321,7 @@ jobs:
       #     path: ./dist/*.whl
       #     overwrite: true
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*
@@ -297,7 +343,7 @@ jobs:
 
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main
         with:
           tool-cache: false
           android: true
@@ -309,19 +355,19 @@ jobs:
 
       - name: Clone
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: "recursive"
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.pyver }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Setup Mamba
-        uses: conda-incubator/setup-miniconda@v3.1.1
+        uses: conda-incubator/setup-miniconda@505e6394dae86d6a5c7fbb6e3fb8938e3e863830 # v3.1.1
         with:
           activate-environment: "llamacpp"
           python-version: ${{ matrix.pyver }}
@@ -340,28 +386,33 @@ jobs:
           # First install basic build tools
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
-          
+
           # Initialize conda for shell
           source $CONDA/etc/profile.d/conda.sh
-          
+
           # Activate the conda environment
           conda activate llamacpp
-          
+
           echo "CONDA_PREFIX after activation: $CONDA_PREFIX"
-          
+
           # Try different CUDA package names and channels
           echo "Attempting to install CUDA ${{ matrix.cuda }}..."
-          
-          # Install using the cuda meta-package from the official channel
-          mamba install -y -c conda-forge 'cuda==${{ matrix.cuda }}'
+
+          # Extract major.minor version (e.g. 12.4.1 -> 12.4) for sub-package pinning
+          CUDA_MAJOR_MINOR=$(echo "${{ matrix.cuda }}" | cut -d. -f1,2)
+          mamba install -y -c nvidia "cuda==${{ matrix.cuda }}" "cuda-cudart-dev==${CUDA_MAJOR_MINOR}.*" "cuda-nvcc==${CUDA_MAJOR_MINOR}.*"
           echo "Successfully installed CUDA ${{ matrix.cuda }}"
-          
+
+          # Verify cuda_runtime.h exists
+          echo "=== Checking cuda_runtime.h ==="
+          find $CONDA_PREFIX -name "cuda_runtime.h" || echo "WARNING: cuda_runtime.h not found!"
+
           # Verify CONDA_PREFIX is set
           if [ -z "$CONDA_PREFIX" ]; then
             echo "ERROR: CONDA_PREFIX is not set after conda activation"
             exit 1
           fi
-          
+
           # Install build dependencies
           python -m pip install --upgrade cmake
           python -m pip install build wheel
@@ -370,7 +421,7 @@ jobs:
           # Verify CMake version
           echo "=== CMake Version ==="
           cmake --version
-          
+
           # Verify CUDA installation
           echo "=== CUDA Installation Check ==="
           echo "CONDA_PREFIX: $CONDA_PREFIX"
@@ -379,7 +430,7 @@ jobs:
           echo "=== NVCC Version ==="
           which nvcc || echo "nvcc not found in PATH"
           nvcc --version || echo "nvcc version check failed"
-          
+
           # Set CUDA environment variables
           echo "=== Setting CUDA Environment Variables ==="
           export CUDA_HOME=$CONDA_PREFIX
@@ -387,7 +438,7 @@ jobs:
           export CUDA_TOOLKIT_ROOT_DIR=$CONDA_PREFIX
           export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
           export PATH="$CONDA_PREFIX/bin:$PATH"
-          
+
           # Save to GITHUB_ENV for subsequent steps
           echo "CUDA_HOME=$CUDA_HOME" >> $GITHUB_ENV
           echo "CUDA_PATH=$CUDA_PATH" >> $GITHUB_ENV
@@ -409,7 +460,7 @@ jobs:
           # Initialize conda for shell
           source $CONDA/etc/profile.d/conda.sh
           conda activate llamacpp
-          
+
           echo "=== Build Environment ==="
           echo "System: ${{ matrix.platform }}"
           echo "Python: $(which python)"
@@ -421,20 +472,74 @@ jobs:
           echo "CONDA_PREFIX: $CONDA_PREFIX"
           which nvcc
           nvcc --version
-          
+
           # Set build environment
           cuda_version=${CUDAVER//./}
           cuda_version=${cuda_version:0:${#cuda_version}-1}
-          
+
           # Export build variables
+          export XLLAMACPP_RELEASE=1
           export XLLAMACPP_BUILD_CUDA=1
           export VERSIONEER_CLOSEST_TAG_ONLY=1
-          export VERBOSE=1S
-          
+          export VERBOSE=1
+
+          # CRITICAL: Use the SYSTEM compiler (GCC 11/12 on Ubuntu 22.04) instead
+          # of conda's GCC 14.3 for both CMake and wheel builds. Conda installs
+          # GCC 14.3 as a dependency of the CUDA toolkit, but its libstdc++ provides
+          # CXXABI_1.3.15 symbols that are NOT available on most deployment targets
+          # (which typically only have CXXABI_1.3.13). System GCC 11/12 uses only
+          # CXXABI_1.3.13 symbols, ensuring broad runtime compatibility.
+          # The system GCC fully supports C++17 which is all that's needed.
+          export CC=/usr/bin/gcc
+          export CXX=/usr/bin/g++
+          # CMAKE_ARGS is picked up by scripts/setup.sh to pass to CMake
+          # -DCMAKE_CUDA_HOST_COMPILER ensures nvcc also uses system g++ for
+          # host-side compilation, preventing CXXABI_1.3.15 from CUDA objects.
+          export CMAKE_ARGS="-DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++"
+          echo "=== Forcing system compiler to avoid CXXABI_1.3.15 dependency ==="
+          echo "CC=$CC"
+          echo "CXX=$CXX"
+          echo "CMAKE_ARGS=$CMAKE_ARGS"
+          $CXX --version
+
           make
           python -m build --wheel
-          
+
           echo "CUDA_VERSION=$cuda_version" >> $GITHUB_ENV
+
+      - name: Verify no CXXABI_1.3.15 dependency
+        run: |
+          echo "=== Checking wheel for CXXABI_1.3.15 dependency ==="
+          # Unpack the wheel and inspect all shared libraries
+          mkdir -p /tmp/wheel_check
+          unzip -o dist/*.whl -d /tmp/wheel_check
+
+          FOUND_CXXABI_1_3_15=0
+          for so in $(find /tmp/wheel_check -name "*.so"); do
+            echo "--- Checking: $so ---"
+            # List all CXXABI version requirements
+            objdump -T "$so" 2>/dev/null | grep -i "CXXABI" | sort -u || true
+            # Check specifically for CXXABI_1.3.15
+            if objdump -T "$so" 2>/dev/null | grep -q "CXXABI_1.3.15"; then
+              echo "❌ ERROR: $so depends on CXXABI_1.3.15!"
+              FOUND_CXXABI_1_3_15=1
+            fi
+          done
+
+          rm -rf /tmp/wheel_check
+
+          if [ "$FOUND_CXXABI_1_3_15" -eq 1 ]; then
+            echo ""
+            echo "❌ FAILURE: Wheel contains shared libraries that depend on CXXABI_1.3.15."
+            echo "This symbol is only available in libstdc++ from GCC 14+, which is not"
+            echo "present on most deployment targets (e.g. Ubuntu 22.04 ships CXXABI_1.3.13)."
+            echo ""
+            echo "Ensure the build uses the SYSTEM compiler (/usr/bin/g++) instead of"
+            echo "conda's GCC 14.x by setting CC=/usr/bin/gcc and CXX=/usr/bin/g++."
+            exit 1
+          fi
+
+          echo "✅ No CXXABI_1.3.15 dependency found. Wheel is compatible."
 
       # - uses: actions/upload-artifact@v4
       #   with:
@@ -442,7 +547,7 @@ jobs:
       #     path: ./dist/*.whl
       #     overwrite: true
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*
@@ -467,16 +572,16 @@ jobs:
     steps:
       - name: Clone
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: "recursive"
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.pyver }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Install python dependencies
         run: |
@@ -499,7 +604,7 @@ jobs:
           echo "$(pwd)/w64devkit/bin" >> $GITHUB_PATH
 
       - name: Setup CUDA
-        uses: Jimver/cuda-toolkit@v0.2.30
+        uses: Jimver/cuda-toolkit@b6fc3a9f3f15256d9d94ffe1254f9c5a2565cde6 # v0.2.30
         id: cuda-toolkit
         with:
           use-github-cache: false
@@ -509,20 +614,21 @@ jobs:
         run: |
           cuda_version=${CUDAVER//./}
           cuda_version=${cuda_version:0:${#cuda_version}-1}
-          
+
+          export XLLAMACPP_RELEASE=1
           export XLLAMACPP_BUILD_CUDA=1
           export VERSIONEER_CLOSEST_TAG_ONLY=1
           export VERBOSE=1
                     
           make
           python -m build --wheel
-          
+
           # On Windows, we use delvewheel for wheel repair
           python -m delvewheel repair --exclude nvcuda.dll dist/*.whl -w dist
-          
+
           echo "CUDA_VERSION=$cuda_version" >> $GITHUB_ENV
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*

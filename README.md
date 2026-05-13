@@ -25,6 +25,7 @@ The following table provide an overview of the current implementations / feature
 | Continuous batching        |         yes         |                no                |
 | Thread safe                |         yes         |                no                |
 | Release package            |      prebuilt       |    build during installation     |
+| Structured outputs         | C++ / [LLGuidance](https://github.com/guidance-ai/llguidance) (Rust) |  Python (`SchemaConverter`)    |
 
 It goes without saying that any help / collaboration / contributions to accelerate the above would be welcome!
 
@@ -38,113 +39,27 @@ As the intent is to provide a very thin wrapping layer and play to the strengths
 
 - Minimize non-wrapper python code.
 
-## Usage
-
-Here is a simple example of how to use `xllamacpp` to get embeddings for a list of texts. For this example, you'll need an embedding model like [Qwen3-Embedding-0.6B-Q8_0.gguf](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf).
-
-```python
-import xllamacpp as xlc
-
-params = xlc.CommonParams()
-
-params.model.path = "Qwen3-Embedding-0.6B-Q8_0.gguf"
-params.embedding = True
-params.pooling_type = xlc.llama_pooling_type.LLAMA_POOLING_TYPE_LAST
-
-server = xlc.Server(params)
-
-embedding_input = {
-    "input": [
-        "I believe the meaning of life is",
-        "This is a test",
-    ],
-    "model": "My Qwen3 Model",
-}
-
-result = server.handle_embeddings(embedding_input)
-
-print(result)
-
-```
-
-Output:
-
-```python
-{'data': [{'embedding': [-0.006413215305656195,
-                         -0.05906733125448227,
-                         ...
-                         -0.05887744203209877],
-           'index': 0,
-           'object': 'embedding'},
-          {'embedding': [0.041170503944158554,
-                         -0.004472420550882816,
-                         ...
-                         0.008314250037074089],
-           'index': 1,
-           'object': 'embedding'}],
- 'model': 'My Qwen3 Model',
- 'object': 'list',
- 'usage': {'prompt_tokens': 11, 'total_tokens': 11}}
-```
-
-## OpenAI API Compatible HTTP Server
-
-The server provides OpenAI API compatible endpoints. For a complete list of available API endpoints, see the [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#api-endpoints). You can use the OpenAI Python client:
-
-```python
-import xllamacpp as xlc
-from openai import OpenAI
-
-# Start server
-params = xlc.CommonParams()
-params.model.path = "Llama-3.2-1B-Instruct-Q8_0.gguf"
-server = xlc.Server(params)
-
-# Connect using OpenAI client
-client = OpenAI(
-    base_url=server.listening_address + "/v1",
-    api_key="not-required"  # No API key needed for local server
-)
-
-# Make chat completion request
-response = client.chat.completions.create(
-    model="local-model",
-    messages=[{"role": "user", "content": "What is the capital of France?"}],
-    max_tokens=10
-)
-
-print(response.choices[0].message.content)
-```
-
-## Prerequisites for Prebuilt Wheels
-
-Before pip installing `xllamacpp`, please ensure your system meets the following requirements based on your build type:
-
-- **CPU (aarch64)**:
-  - Requires ARMv8-A or later architecture
-  - For best performance, build from source if your CPU supports advanced instruction sets
-
-- **CUDA (Linux)**:
-  - Requires glibc 2.35 or later
-  - Compatible NVIDIA GPU with appropriate drivers (CUDA 12.4 or 12.8)
-
-- **ROCm (Linux)**:
-  - Requires glibc 2.35 or later
-  - Requires gcc 10 or later (ROCm libraries have this dependency)
-  - Compatible AMD GPU with ROCm support (ROCm 6.3.4 or 6.4.1)
-
-- **Vulkan (Linux/Windows, Intel/AMD/NVIDIA where supported)**:
-  - Install the Vulkan SDK and GPU drivers with Vulkan support
-  - Linux users may need distro packages and the LunarG SDK
-  - macOS Intel is supported via Vulkan; Apple Silicon Vulkan is not supported in this project
 
 ## Install
 
 **Note on Performance and Compatibility**
 
-For maximum performance, you can build `xllamacpp` from source to optimize for your specific native CPU architecture. The pre-built wheels are designed for broad compatibility.
+> ⚠️ **The pre-built Linux/Windows CPU-only release wheels are NOT fully optimized.** They are compiled for **maximum compatibility** across a wide range of hardware, not for maximum performance. CPU-native optimizations (e.g., AVX-512, SVE, AMX) are **disabled** in these builds to ensure they run on as many machines as possible.
+>
+> ✅ **macOS wheels are fully optimized.** Since each macOS architecture (Apple Silicon / Intel) uses a consistent CPU, native optimizations are enabled in release builds.
+>
+> ✅ **GPU-accelerated wheels (CUDA / ROCm / Vulkan) are already optimized for GPU computation.** The heavy lifting is done on the GPU, so the lack of CPU-native optimizations has minimal impact on overall performance.
+>
+> **If you are on Linux/Windows using CPU-only inference and want the best performance, build from source.** When building locally, all native CPU optimizations are automatically enabled for your specific machine. See [Build from Source](#build-from-source) for instructions.
 
-Specifically, the `aarch64` wheels are built for the `armv8-a` architecture. This ensures they run on a wide range of ARM64 devices, but it means that more advanced CPU instruction sets (like SVE) are not enabled. If your CPU supports these advanced features, building from source will provide better performance.
+Specifically:
+- **macOS** (Apple Silicon & Intel): wheels are built with native CPU optimizations enabled — **no action needed**.
+- **CUDA / ROCm / Vulkan** wheels: GPU acceleration is fully optimized; CPU-native optimizations are not critical since inference runs primarily on the GPU.
+- **Linux x86_64 CPU-only** wheels disable `-march=native`, so advanced instruction sets like AVX-512 or AMX are not used.
+- **Linux aarch64 CPU-only** wheels target the baseline `armv8-a` architecture, so advanced features like SVE are not enabled.
+- **Windows x86_64 CPU-only** wheels disable `-march=native`, similar to Linux x86_64.
+
+If you are on Linux/Windows using **CPU-only** inference and your CPU supports these advanced features, building from source can provide **significantly better performance**.
 
 - From pypi for `CPU` or `Mac`:
 
@@ -181,6 +96,31 @@ pip install -U xllamacpp
   ```sh
   pip install xllamacpp --force-reinstall --index-url https://xorbitsai.github.io/xllamacpp/whl/vulkan
   ```
+
+## Prerequisites for Prebuilt Wheels
+
+Before pip installing `xllamacpp`, please ensure your system meets the following requirements based on your build type:
+
+- **CPU (macOS)**:
+  - Pre-built wheels are already optimized for native CPU — no additional steps needed
+
+- **CPU (Linux aarch64)**:
+  - Requires ARMv8-A or later architecture
+  - For best performance, build from source if your CPU supports advanced instruction sets (e.g., SVE)
+
+- **CUDA (Linux)**:
+  - Requires glibc 2.35 or later
+  - Compatible NVIDIA GPU with appropriate drivers (CUDA 12.4 or 12.8)
+
+- **ROCm (Linux)**:
+  - Requires glibc 2.35 or later
+  - Requires gcc 10 or later (ROCm libraries have this dependency)
+  - Compatible AMD GPU with ROCm support (ROCm 6.3.4 or 6.4.1)
+
+- **Vulkan (Linux/Windows, Intel/AMD/NVIDIA where supported)**:
+  - Install the Vulkan SDK and GPU drivers with Vulkan support
+  - Linux users may need distro packages and the LunarG SDK
+  - macOS Intel is supported via Vulkan; Apple Silicon Vulkan is not supported in this project
 
 ## Build from Source
 
@@ -279,11 +219,885 @@ pip install -U xllamacpp
      make
      ```
 
+## Usage
+
+All examples below assume you have `xllamacpp` installed and a GGUF model file available. See [Install](#install) for installation instructions and [Testing](#testing) for how to download models.
+
+### Configuring Parameters
+
+`CommonParams` is the central configuration object. It controls model loading, inference, sampling, server behavior, and more. For a complete list of all parameters with types, defaults, and descriptions, see the [Parameters Reference](params_reference.md).
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+
+# Model path
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+
+# Context and prediction
+params.n_ctx = 512          # Context window size
+params.n_predict = 128      # Max tokens to predict
+params.n_batch = 2048       # Batch size for prompt processing
+params.n_ubatch = 512       # Micro-batch size
+params.n_parallel = 1       # Number of parallel sequences
+
+# CPU threading
+params.cpuparams.n_threads = 4
+params.cpuparams_batch.n_threads = 4
+
+# Sampling parameters
+params.sampling.temp = 0.8
+params.sampling.top_k = 40
+params.sampling.top_p = 0.95
+params.sampling.seed = 42
+
+# Server options
+params.warmup = True
+params.endpoint_metrics = True
+```
+
+### Environment Variables
+
+xllamacpp supports several environment variables to control low-level behavior:
+
+- **`LLAMA_ATTN_ROT_DISABLE`**: Set to `1` to disable attention rotation in KV cache quantization, enabling classic KV attention. This is useful for troubleshooting when comparing behavior with older versions or when the rotation feature causes issues. Default: rotation is enabled.
+
+```python
+import os
+import xllamacpp as xlc
+
+# Disable attention rotation for classic KV attention
+os.environ["LLAMA_ATTN_ROT_DISABLE"] = "1"
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+server = xlc.Server(params)
+```
+
+### Text Completions
+
+Generate text from a prompt using the completions API:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_predict = 128
+params.n_ctx = 256
+params.cpuparams.n_threads = 4
+
+server = xlc.Server(params)
+
+# Non-streaming completion (returns a dict)
+result = server.handle_completions({
+    "max_tokens": 128,
+    "prompt": "Write the fibonacci function in C++.",
+})
+print(result["choices"][0]["text"])
+```
+
+### Chat Completions
+
+Use the chat completions API with message-based conversations:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_predict = 128
+params.n_ctx = 256
+params.cpuparams.n_threads = 4
+
+server = xlc.Server(params)
+
+result = server.handle_chat_completions({
+    "max_tokens": 128,
+    "messages": [
+        {"role": "system", "content": "You are a coding assistant."},
+        {"role": "user", "content": "Write the fibonacci function in C++."},
+    ],
+})
+print(result["choices"][0]["message"]["content"])
+```
+
+### Streaming
+
+Enable streaming to receive tokens as they are generated. Provide a callback function:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_predict = 64
+params.n_ctx = 256
+params.cpuparams.n_threads = 4
+
+server = xlc.Server(params)
+
+# Streaming completions with a callback
+server.handle_completions(
+    {
+        "max_tokens": 128,
+        "prompt": "Tell me a story.",
+        "stream": True,
+    },
+    lambda chunk: print(chunk),  # Called for each chunk
+)
+
+# Streaming chat completions
+server.handle_chat_completions(
+    {
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "Tell me a joke."}],
+        "stream": True,
+    },
+    lambda chunk: print(chunk),
+)
+```
+
+You can **stop streaming early** by returning `True` from the callback:
+
+```python
+count = 0
+
+def stop_after_one(chunk):
+    global count
+    count += 1
+    print(chunk)
+    return True  # Returning True stops the stream
+
+server.handle_completions(
+    {"prompt": "Write a long story.", "stream": True, "max_tokens": 128},
+    stop_after_one,
+)
+# Only one chunk will be received
+```
+
+### Structured Output with JSON Grammar
+
+Constrain model output to conform to a JSON schema or GBNF grammar. xllamacpp is built with [LLGuidance](https://github.com/guidance-ai/llguidance) enabled (`LLAMA_LLGUIDANCE=ON`), a high-performance Rust-based constrained decoding library. When LLGuidance is enabled, JSON Schema requests are automatically routed through LLGuidance instead of the default GBNF grammar engine, providing faster token mask computation (~50μs average) and more spec-compliant JSON Schema support. The entire structured output pipeline — schema conversion, grammar parsing, and token mask computation — runs in native C++/Rust with no Python overhead.
+
+In contrast, `llama-cpp-python` does not enable LLGuidance and implements JSON Schema → GBNF conversion in Python via a `SchemaConverter` class. It relies solely on llama.cpp's built-in GBNF grammar engine for constrained sampling.
+
+**Important:** For server endpoints, grammar constraints must be passed **in the request body**, not via `params.sampling.grammar` (which only affects the CLI path). See the comparison below.
+
+All three methods below share the same setup:
+
+```python
+import json
+import xllamacpp as xlc
+
+schema = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "score": {"type": "number"},
+    },
+    "required": ["answer"],
+}
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_predict = 64
+params.n_ctx = 256
+params.sampling.temp = 0
+params.sampling.top_k = 1
+
+server = xlc.Server(params)
+
+messages = [
+    {"role": "system", "content": "Respond with a JSON object matching the provided schema."},
+    {"role": "user", "content": "Provide an answer string and an optional numeric score."},
+]
+```
+
+#### Method 1: `grammar` in Request Body
+
+Convert the JSON schema to a grammar string using `xlc.json_schema_to_grammar()`, then pass it in the request. The output format depends on the build: LLGuidance Lark format when built with `LLAMA_LLGUIDANCE=ON` (default for xllamacpp), or GBNF otherwise.
+
+```python
+# Convert schema to grammar string (LLGuidance Lark format when built with LLAMA_LLGUIDANCE=ON)
+grammar_str = xlc.json_schema_to_grammar(schema)
+
+result = server.handle_chat_completions({
+    "max_tokens": 64,
+    "messages": messages,
+    # Grammar MUST be passed in the request body for server endpoints
+    "grammar": grammar_str,
+})
+```
+
+#### Method 2: `json_schema` in Request Body
+
+Pass the JSON schema directly in the request — llama.cpp converts it to a grammar constraint internally (LLGuidance Lark format when built with `LLAMA_LLGUIDANCE=ON`, or GBNF otherwise):
+
+```python
+result = server.handle_chat_completions({
+    "max_tokens": 64,
+    "messages": messages,
+    "json_schema": schema,
+})
+```
+
+#### Method 3: `response_format` (OpenAI-Compatible)
+
+Use the OpenAI-compatible `response_format` field for chat completions:
+
+```python
+# Type "json_object" with optional schema
+result = server.handle_chat_completions({
+    "messages": messages,
+    "response_format": {"type": "json_object", "schema": schema},
+})
+
+# Type "json_schema" (OpenAI-style nested format)
+result = server.handle_chat_completions({
+    "messages": messages,
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {"schema": schema},
+    },
+})
+```
+
+For all methods above, parse the result the same way:
+
+```python
+content = result["choices"][0]["message"]["content"]
+parsed = json.loads(content)
+print(parsed)  # e.g. {"answer": "Hello", "score": 42}
+```
+
+> **Note:** `json_schema` and `grammar` cannot be used simultaneously in the same request.
+
+#### Structured Outputs: xllamacpp vs llama-cpp-python
+
+| Aspect | xllamacpp | llama-cpp-python |
+|:---|:---|:---|
+| [LLGuidance](https://github.com/guidance-ai/llguidance) | Enabled (`LLAMA_LLGUIDANCE=ON`) | Not enabled |
+| JSON Schema → Grammar | C++ / Rust (LLGuidance Lark format, ~50μs/mask) | Python (`SchemaConverter` → GBNF) |
+| Grammar enforcement | LLGuidance sampler (Rust) | GBNF sampler (C++, via ctypes) |
+| Structured output API | Request body: `grammar`, `json_schema`, or `response_format` | Python args: `grammar=LlamaGrammar(...)` or `response_format={...}` |
+
+### Embeddings
+
+Generate embeddings for a list of texts. Requires an embedding model (e.g., [Qwen3-Embedding-0.6B-Q8_0.gguf](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf)):
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+params.embedding = True
+params.n_ctx = 512
+params.n_batch = 128
+params.n_ubatch = 128
+params.pooling_type = xlc.llama_pooling_type.LLAMA_POOLING_TYPE_LAST
+
+server = xlc.Server(params)
+
+result = server.handle_embeddings({
+    "input": [
+        "I believe the meaning of life is",
+        "This is a test",
+    ],
+    "model": "My Qwen3 Model",
+})
+
+for item in result["data"]:
+    print(f"Index {item['index']}: {len(item['embedding'])} dimensions")
+```
+
+### Reranking
+
+Rerank documents by relevance to a query. Requires a reranker model (e.g., `bge-reranker-v2-m3-Q2_K.gguf`):
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/bge-reranker-v2-m3-Q2_K.gguf"
+params.embedding = True
+params.n_ctx = 512
+params.n_batch = 128
+params.n_ubatch = 128
+params.pooling_type = xlc.llama_pooling_type.LLAMA_POOLING_TYPE_RANK
+
+server = xlc.Server(params)
+
+result = server.handle_rerank({
+    "query": "What is the capital of France?",
+    "documents": [
+        "Paris is the capital of France.",
+        "The Eiffel Tower is in Paris.",
+        "Germany is located in Europe.",
+    ],
+})
+
+for doc in result["results"]:
+    print(f"Document {doc['index']}: relevance_score={doc['relevance_score']:.4f}")
+```
+
+### Multimodal (Vision)
+
+Process images alongside text using a vision model. Requires a multimodal model and its mmproj file:
+
+```python
+import base64
+import xllamacpp as xlc
+
+# Load and encode an image
+with open("image.png", "rb") as f:
+    img_b64 = "data:image/png;base64," + base64.b64encode(f.read()).decode("utf-8")
+
+params = xlc.CommonParams()
+params.model.path = "models/tinygemma3-Q8_0.gguf"
+params.mmproj.path = "models/mmproj-tinygemma3.gguf"
+params.n_predict = 128
+params.n_ctx = 1024
+params.sampling.temp = 0
+params.sampling.top_k = 1
+
+server = xlc.Server(params)
+
+result = server.handle_chat_completions({
+    "max_tokens": 128,
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this:"},
+                {"type": "image_url", "image_url": {"url": img_b64}},
+            ],
+        },
+    ],
+})
+print(result["choices"][0]["message"]["content"])
+```
+
+### LoRA Adapters
+
+Load and apply LoRA adapters to customize model behavior:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/stories15M_MOE-F16.gguf"
+params.n_predict = 64
+params.n_ctx = 256
+params.sampling.seed = 42
+params.sampling.temp = 0.0
+params.sampling.top_k = 1
+
+# Attach a LoRA adapter with a scale factor
+lora = xlc.CommonAdapterLoraInfo("models/moe_shakespeare15M.gguf", 1.0)
+params.lora_adapters = [lora]
+
+# You can adjust the scale dynamically
+params.lora_adapters[0].scale = 0.5  # Half strength
+
+server = xlc.Server(params)
+
+result = server.handle_completions({
+    "max_tokens": 64,
+    "prompt": "Look in thy glass",
+    "temperature": 0.0,
+})
+print(result["choices"][0]["text"])
+```
+
+### Reasoning Support
+
+Control reasoning/thinking behavior for models that support it (e.g., DeepSeek, QwQ):
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/my-reasoning-model.gguf"
+
+# Reasoning format: controls how thought tags are parsed
+# COMMON_REASONING_FORMAT_DEEPSEEK (default) - puts thoughts in reasoning_content
+# COMMON_REASONING_FORMAT_NONE - leaves thoughts unparsed in content
+params.reasoning_format = xlc.common_reasoning_format.COMMON_REASONING_FORMAT_DEEPSEEK
+
+# Enable/disable reasoning: -1=auto, 0=off, 1=on
+params.enable_reasoning = 1
+
+# Token budget for thinking: -1=unrestricted, 0=immediate end, N>0=budget
+params.reasoning_budget = 1024
+
+# Sampling-level reasoning budget
+params.sampling.reasoning_budget_tokens = 500
+```
+
+### Speculative Decoding
+
+Speculative decoding pairs a small, fast "draft" model with a larger "target" model to speed up generation. The draft model proposes several tokens at once; the target model verifies them in a single forward pass and accepts the longest matching prefix. With a well-aligned tokenizer/vocabulary, the produced text is **bit-exact** to running the target model alone, but throughput improves because multiple tokens are validated per target-model decode step.
+
+This is especially helpful for unified-memory APU/iGPU users (e.g., AMD Strix Halo, Apple Silicon) who want to run larger dense models: the draft model fits easily alongside the target and trades a small amount of memory for a meaningful tokens/sec speedup on memory-bandwidth-bound hardware.
+
+#### Draft-Model Speculative Decoding
+
+A real-world example pairing a large model with a smaller same-family checkpoint:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+
+# Target (main) model — the large, high-quality model.
+params.model.path = "models/Qwen3-4B-Instruct-Q8_0.gguf"
+
+# Draft model — a smaller, faster model from the same family.
+# Both models must share the same tokenizer/vocabulary.
+params.speculative.mparams_dft.path = "models/Qwen3-0.6B-Instruct-Q4_0.gguf"
+
+# Draft N-tokens window: propose between n_min and n_max tokens per step.
+params.speculative.n_min = 4   # Min tokens to draft before verification
+params.speculative.n_max = 8   # Max tokens to draft per step
+
+params.n_predict = 128
+params.n_ctx = 512
+params.cpuparams.n_threads = 4
+
+# Deterministic sampling (recommended for verifying equivalence with non-speculative)
+params.sampling.seed = 42
+params.sampling.temp = 0.0
+params.sampling.top_k = 1
+
+server = xlc.Server(params)
+
+# Use exactly like a normal server — speculative decoding is transparent.
+result = server.handle_completions({
+    "max_tokens": 128,
+    "prompt": "I believe the meaning of life is",
+    "temperature": 0.0,
+})
+print(result["choices"][0]["text"])
+```
+
+> **Note:** Setting `speculative.type` is *not* required when a draft model path is provided — the draft-model path automatically triggers the draft-model speculative decoding path.
+
+#### Per-Request Speculative Overrides
+
+You can override the speculative decoding parameters on a per-request basis:
+
+```python
+# Tighten the draft window for a single request.
+result = server.handle_completions({
+    "max_tokens": 64,
+    "prompt": "Once upon a time,",
+    "temperature": 0.0,
+    "speculative.n_min": 1,
+    "speculative.n_max": 4,
+    "speculative.p_min": 0.0,
+})
+print(result["choices"][0]["text"])
+```
+
+#### N-gram Based Speculative Decoding (No Draft Model)
+
+For self-speculative decoding without a separate draft model, use n-gram lookup:
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_predict = 128
+params.n_ctx = 512
+
+# N-gram speculative decoding — no draft model needed.
+params.speculative.type = xlc.common_speculative_type.COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+params.speculative.n_max = 16      # Max tokens to draft
+params.speculative.n_min = 5       # Min tokens to draft
+params.speculative.ngram_size_n = 12
+params.speculative.ngram_size_m = 48
+params.speculative.ngram_min_hits = 1
+
+server = xlc.Server(params)
+
+result = server.handle_completions({
+    "max_tokens": 128,
+    "prompt": "The quick brown fox",
+})
+print(result["choices"][0]["text"])
+```
+
+### Request-Level Options
+
+Both `handle_completions()` and `handle_chat_completions()` accept all [llama.cpp server options](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#api-endpoints) in the request dict. Common options include:
+
+```python
+result = server.handle_chat_completions({
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "seed": 42,
+    "stream": False,
+    "stop": ["\n\n", "User:"],          # Stop sequences
+    "cache_prompt": True,                # Reuse KV cache from previous requests
+    "n_probs": 5,                        # Return top-N token probabilities
+    "repeat_penalty": 1.1,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    "grammar": "...",                    # BNF-like grammar constraint
+    "json_schema": {"type": "object"},   # JSON schema constraint
+    "response_format": {"type": "json_object"},  # OpenAI-compatible format
+    "samplers": ["dry", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"],
+    "lora": [{"id": 0, "scale": 0.5}],  # Per-request LoRA scaling
+})
+```
+
+### GPU Memory Estimation
+
+Estimate how many layers can be offloaded to GPU(s) given available memory:
+
+```python
+from xllamacpp import estimate_gpu_layers
+
+devices = [
+    {"name": "cuda", "memory_free": 8 * 1024**3, "memory_min": 2048},
+]
+
+estimate = estimate_gpu_layers(
+    devices,
+    "models/my-model.gguf",
+    [],                      # projector paths
+    context_length=2048,
+    batch_size=512,
+    num_parallel=1,
+    kv_cache_type="",
+)
+
+print(f"Layers to offload: {estimate.layers}")
+print(f"VRAM usage: {estimate.vram_size / 1024**3:.2f} GB")
+print(f"Total model size: {estimate.total_size / 1024**3:.2f} GB")
+print(f"Tensor split: {estimate.tensor_split}")
+```
+
+### System Info & Device Info
+
+Query the runtime environment, including CPU features and available compute devices:
+
+```python
+import xllamacpp as xlc
+
+# Get system info string (CPU features, build options, etc.)
+print(xlc.get_system_info())
+
+# Get available compute devices (CPU, CUDA, Metal, etc.)
+devices = xlc.get_device_info()
+for dev in devices:
+    print(dev["name"])
+```
+
+## OpenAI API Compatible HTTP Server
+
+`xlc.Server` automatically starts an HTTP server that provides OpenAI API compatible endpoints. The server supports continuous batching, parallel decoding, prompt caching, and multimodal inputs. For the full specification, see the [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#api-endpoints).
+
+### Available HTTP Endpoints
+
+The server exposes the following endpoints. For full details on request/response formats, see the [llama.cpp server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#api-endpoints).
+
+**General:**
+
+| Endpoint | Method | Description |
+|:---------|:------:|:------------|
+| `/health`, `/v1/health` | GET | Health check (public, no API key required) |
+| `/models`, `/v1/models` | GET | List loaded models (OpenAI compatible) |
+| `/props` | GET/POST | Server properties & default generation settings |
+| `/metrics` | GET | Prometheus-format metrics (requires `endpoint_metrics = True`) |
+| `/slots` | GET | View inference slot states (requires `endpoint_slots = True`) |
+
+**Inference:**
+
+| Endpoint | Method | Description |
+|:---------|:------:|:------------|
+| `/completion` | POST | Text completions (llama.cpp native format) |
+| `/v1/completions`, `/completions` | POST | Text completions (OpenAI compatible) |
+| `/v1/chat/completions`, `/chat/completions` | POST | Chat completions (OpenAI compatible) |
+| `/v1/responses` | POST | Responses API (OpenAI compatible) |
+| `/v1/messages` | POST | Messages API (Anthropic compatible) |
+| `/infill` | POST | Code infill (FIM: fill-in-the-middle) |
+
+**Embeddings & Reranking:**
+
+| Endpoint | Method | Description |
+|:---------|:------:|:------------|
+| `/v1/embeddings` | POST | Generate embeddings (OpenAI compatible) |
+| `/embedding` | POST | Generate embeddings (llama.cpp native, supports `pooling none`) |
+| `/rerank`, `/v1/rerank`, `/v1/reranking` | POST | Rerank documents by relevance |
+
+**Tokenization & Templates:**
+
+| Endpoint | Method | Description |
+|:---------|:------:|:------------|
+| `/tokenize` | POST | Tokenize text to token IDs |
+| `/detokenize` | POST | Convert token IDs back to text |
+| `/apply-template` | POST | Apply chat template without inference |
+
+**LoRA & Slot Management:**
+
+| Endpoint | Method | Description |
+|:---------|:------:|:------------|
+| `/lora-adapters` | GET | List loaded LoRA adapters with scales |
+| `/lora-adapters` | POST | Update global LoRA adapter scales |
+| `/slots/{id}?action=save` | POST | Save slot KV cache to file |
+| `/slots/{id}?action=restore` | POST | Restore slot KV cache from file |
+| `/slots/{id}?action=erase` | POST | Erase slot KV cache |
+
+### Using the OpenAI Python Client
+
+```python
+import xllamacpp as xlc
+from openai import OpenAI
+
+# Start server
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+server = xlc.Server(params)
+
+# Connect using OpenAI client
+client = OpenAI(
+    base_url=server.listening_address + "/v1",
+    api_key="not-required"  # No API key needed for local server
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="local-model",
+    messages=[{"role": "user", "content": "What is the capital of France?"}],
+    max_tokens=10
+)
+print(response.choices[0].message.content)
+```
+
+### Using `requests` Directly
+
+```python
+import requests
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_ctx = 256
+params.endpoint_metrics = True
+
+server = xlc.Server(params)
+base_url = server.listening_address
+
+# Health check
+resp = requests.get(f"{base_url}/health")
+print(resp.json())  # {"status": "ok"}
+
+# Chat completion
+resp = requests.post(f"{base_url}/v1/chat/completions", json={
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 32,
+})
+print(resp.json()["choices"][0]["message"]["content"])
+
+# Streaming
+resp = requests.post(f"{base_url}/v1/chat/completions", json={
+    "messages": [{"role": "user", "content": "Tell me a joke."}],
+    "max_tokens": 64,
+    "stream": True,
+}, stream=True)
+for line in resp.iter_lines():
+    if line:
+        print(line.decode())
+
+# Tokenize / Detokenize
+resp = requests.post(f"{base_url}/tokenize", json={
+    "content": "Hello world, how are you?",
+    "add_special": False,
+    "with_pieces": True,  # Return token pieces alongside IDs
+})
+print(resp.json()["tokens"])
+
+resp = requests.post(f"{base_url}/detokenize", json={
+    "tokens": [1, 2, 3, 4, 5]
+})
+print(resp.json()["content"])
+
+# Apply chat template (format messages without inference)
+resp = requests.post(f"{base_url}/apply-template", json={
+    "messages": [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello!"},
+    ]
+})
+print(resp.json()["prompt"])  # Formatted prompt string
+
+# Metrics (Prometheus format)
+resp = requests.get(f"{base_url}/metrics")
+print(resp.text)
+```
+
+### Embedding via HTTP
+
+```python
+import requests
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+params.embedding = True
+params.n_ctx = 512
+params.n_batch = 128
+params.n_ubatch = 128
+params.pooling_type = xlc.llama_pooling_type.LLAMA_POOLING_TYPE_LAST
+
+server = xlc.Server(params)
+base_url = server.listening_address
+
+resp = requests.post(f"{base_url}/v1/embeddings", json={
+    "input": ["I believe the meaning of life is", "This is a test"],
+})
+data = resp.json()
+for item in data["data"]:
+    print(f"Index {item['index']}: {len(item['embedding'])} dimensions")
+```
+
+### Reranking via HTTP
+
+```python
+import requests
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/bge-reranker-v2-m3-Q2_K.gguf"
+params.embedding = True
+params.reranking = True
+params.n_ctx = 512
+params.n_batch = 128
+params.n_ubatch = 128
+params.pooling_type = xlc.llama_pooling_type.LLAMA_POOLING_TYPE_RANK
+
+server = xlc.Server(params)
+base_url = server.listening_address
+
+resp = requests.post(f"{base_url}/v1/rerank", json={
+    "model": "bge-reranker",
+    "query": "What is panda?",
+    "top_n": 3,
+    "documents": [
+        "hi",
+        "it is a bear",
+        "The giant panda (Ailuropoda melanoleuca), sometimes called a panda bear or simply panda, is a bear species endemic to China.",
+    ],
+})
+for doc in resp.json()["results"]:
+    print(f"Document {doc['index']}: relevance_score={doc['relevance_score']:.4f}")
+```
+
+### Code Infill via HTTP
+
+The `/infill` endpoint supports fill-in-the-middle (FIM) for code completion:
+
+```python
+import requests
+
+resp = requests.post(f"{base_url}/infill", json={
+    "input_prefix": "def fibonacci(n):\n    if n <= 1:\n        return n\n",
+    "input_suffix": "\n    return fibonacci(n-1) + fibonacci(n-2)",
+    "max_tokens": 64,
+})
+print(resp.json()["content"])
+```
+
+### LoRA Adapters via HTTP
+
+Manage LoRA adapters at runtime through HTTP endpoints:
+
+```python
+import requests
+
+# List loaded LoRA adapters
+resp = requests.get(f"{base_url}/lora-adapters")
+print(resp.json())  # [{"id": 0, "path": "...", "scale": 1.0}, ...]
+
+# Update global LoRA scales
+requests.post(f"{base_url}/lora-adapters", json=[
+    {"id": 0, "scale": 0.5},
+])
+
+# Per-request LoRA scaling (overrides global scale)
+resp = requests.post(f"{base_url}/v1/chat/completions", json={
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 32,
+    "lora": [{"id": 0, "scale": 0.8}],
+})
+```
+
+### Parallel Slots
+
+The server supports multiple concurrent requests via parallel slots:
+
+```python
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.n_parallel = 4   # 4 concurrent request slots
+params.n_ctx = 2048     # Context shared across slots
+params.cont_batching = True  # Enable continuous batching (default: True)
+
+server = xlc.Server(params)
+```
+
+### Prompt Caching
+
+Prompt caching is enabled by default and reuses KV cache from previous requests when prompts share a common prefix:
+
+```python
+params = xlc.CommonParams()
+params.cache_prompt = True     # Enabled by default
+params.n_cache_reuse = 256     # Min chunk size for KV shifting reuse (0 = disabled)
+```
+
+You can also control caching per-request:
+
+```python
+result = server.handle_chat_completions({
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "cache_prompt": True,  # Reuse KV cache from previous request
+})
+```
+
+### Server Sleep & Wake
+
+The server supports automatic sleep after idle time to free resources. When sleeping, the model and KV cache are unloaded from memory. Any new inference request automatically wakes the server.
+
+```python
+import xllamacpp as xlc
+
+params = xlc.CommonParams()
+params.model.path = "models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+params.sleep_idle_seconds = 60  # Sleep after 60 seconds of inactivity
+
+server = xlc.Server(params)
+# Server will automatically sleep/wake as needed
+# Check status via: GET /props → {"is_sleeping": true/false}
+```
+
+Note: `/health`, `/props`, and `/models` endpoints remain responsive during sleep and do not trigger a wake-up.
+
 ## Testing
 
-The `tests` directory in this repo provides extensive examples of using xllamacpp.
+The `tests` directory provides extensive examples and test coverage for xllamacpp.
 
-However, as a first step, you should download a smallish llm in the `.gguf` model from [huggingface](https://huggingface.co/models?search=gguf). A good model to start and which is assumed by tests is [Llama-3.2-1B-Instruct-Q8_0.gguf](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q8_0.gguf). `xllamacpp` expects models to be stored in a `models` folder in the cloned `xllamacpp` directory. So to create the `models` directory if doesn't exist and download this model, you can just type:
+### Download Models
+
+As a first step, download a small GGUF model from [HuggingFace](https://huggingface.co/models?search=gguf). The default test model is [Llama-3.2-1B-Instruct-Q8_0.gguf](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q8_0.gguf). Models should be placed in the `models/` directory:
 
 ```sh
 make download
@@ -297,15 +1111,18 @@ mkdir models && cd models
 wget https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q8_0.gguf 
 ```
 
-Now you can test it using `llama-cli` or `llama-simple`:
+### Run Tests
+
+You can verify your installation with `llama-cli`:
 
 ```sh
 bin/llama-cli -c 512 -n 32 -m models/Llama-3.2-1B-Instruct-Q8_0.gguf \
  -p "Is mathematics discovered or invented?"
 ```
 
-You can also run the test suite with `pytest` by typing `pytest` or:
+Run the full test suite:
 
 ```sh
 make test
 ```
+

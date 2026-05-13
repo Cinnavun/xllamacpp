@@ -85,12 +85,6 @@ class TestServerHTTP:
         data = response.json()
         assert "data" in data
 
-        # Test /api/tags (ollama compatible)
-        response = requests.get(f"{server_url}/api/tags")
-        assert response.status_code == 200
-        data = response.json()
-        assert "models" in data
-
     def test_props_endpoints(self, server_url):
         """Test server properties endpoints"""
         # Test GET /props
@@ -145,10 +139,6 @@ class TestServerHTTP:
         assert response.status_code == 200
         data = response.json()
         assert "choices" in data
-
-        # Test /api/chat (ollama compatible)
-        response = requests.post(f"{server_url}/api/chat", json=chat_data)
-        assert response.status_code == 200
 
     def test_tokenize_endpoints(self, server_url):
         """Test tokenization endpoints"""

@@ -9,7 +9,7 @@ name: Python CI
 on:
   push:
     branches:
-      - '*'
+      - main
   pull_request:
     types: ['opened', 'reopened', 'synchronize']
 
@@ -27,22 +27,22 @@ jobs:
         python-version: [ "3.11" ]
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
         with:
           fetch-depth: 0
           submodules: recursive
       - name: Set up Python environment
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
         with:
           python-version: "3.11"
       - name: black
-        uses: psf/black@stable
+        uses: psf/black@c6755bb741b6481d6b3d3bb563c83fa060db96c9 # stable
         with:
           src: "src/xllamacpp"
           options: "--check --verbose"
           use_pyproject: true
       - name: clang-format
-        uses: jidicula/clang-format-action@v4.15.0
+        uses: jidicula/clang-format-action@e76bbcdbfa50915ce33b2b917077e40f4bf127ca # v4.15.0
         with:
             clang-format-version: '16'
             check-path: 'src/xllamacpp'
@@ -61,13 +61,13 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
         with:
           fetch-depth: 0
           submodules: recursive
 
       - name: Set up conda ${{ matrix.python-version }}
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167 # v3
         with:
           python-version: ${{ matrix.python-version }}
 

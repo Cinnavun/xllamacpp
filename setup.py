@@ -34,7 +34,7 @@ DEFINE_MACROS = [("Py_LIMITED_API", PY_LIMITED_API_VERSION)]
 if PLATFORM == "Windows":
     EXTRA_COMPILE_ARGS = ["/std:c++17"]
 else:
-    EXTRA_COMPILE_ARGS = ["-std=c++17"]
+    EXTRA_COMPILE_ARGS = ["-std=c++17", "-fvisibility=hidden", "-fvisibility-inlines-hidden"]
     if PLATFORM == "Darwin":
         EXTRA_COMPILE_ARGS.append("-mmacosx-version-min=12.0")
 EXTRA_LINK_ARGS = []
@@ -62,7 +62,8 @@ LIBRARIES = []
 if PLATFORM == "Windows":
     LIBRARIES.extend(
         [
-            "common",
+            "llama-common-base",
+            "llama-common",
             "llama",
             "ggml",
             "ggml-base",
@@ -88,27 +89,24 @@ if PLATFORM == "Windows":
         LIBRARIES.extend(["ggml-vulkan", "vulkan-1"])
 else:
     LIBRARIES.extend(["pthread"])
-    if PLATFORM == "Darwin":
-        EXTRA_OBJECTS.extend(
-            [
-                f"{LLAMACPP_LIBS_DIR}/libssl.a",
-                f"{LLAMACPP_LIBS_DIR}/libcrypto.a",
-            ]
-        )
-    else:
-        # Linux platform link with system ssl.
-        LIBRARIES.extend(["ssl", "crypto"])
+    # Order matters for static linking: dependents before dependencies.
+    # libssl.a/libcrypto.a must come AFTER libraries that reference OpenSSL symbols
+    # (e.g., libcpp-httplib.a, libserver-context.a).
     EXTRA_OBJECTS.extend(
         [
             f"{LLAMACPP_LIBS_DIR}/libserver-context.a",
             f"{LLAMACPP_LIBS_DIR}/libcpp-httplib.a",
             f"{LLAMACPP_LIBS_DIR}/libmtmd.a",
-            f"{LLAMACPP_LIBS_DIR}/libcommon.a",
+            f"{LLAMACPP_LIBS_DIR}/libllama-common-base.a",
+            f"{LLAMACPP_LIBS_DIR}/libllama-common.a",
             f"{LLAMACPP_LIBS_DIR}/libllguidance.a",
             f"{LLAMACPP_LIBS_DIR}/libllama.a",
             f"{LLAMACPP_LIBS_DIR}/libggml.a",
             f"{LLAMACPP_LIBS_DIR}/libggml-cpu.a",
             f"{LLAMACPP_LIBS_DIR}/libggml-base.a",
+            # BoringSSL static libraries must be last (they are dependencies, not dependents)
+            f"{LLAMACPP_LIBS_DIR}/libssl.a",
+            f"{LLAMACPP_LIBS_DIR}/libcrypto.a",
         ]
     )
     if BUILD_CUDA:
@@ -163,17 +161,10 @@ if PLATFORM == "Darwin":
             ]
         )
 elif PLATFORM == "Linux":
-    # Static-link libstdc++ / libgcc so the wheel stays manylinux_2_28
-    # compatible.  The manylinux_2_28 build image ships gcc-toolset-14
-    # whose libstdc++.so introduces GLIBCXX / CXXABI symbols newer than
-    # glibc 2.28; without static linking auditwheel bumps the tag to
-    # manylinux_2_31+.
-    #
-    # Trade-off: static libstdc++ slightly increases wheel size and means
-    # C++ exceptions / RTTI cannot cross shared-object boundaries.  This is
-    # acceptable here because the Python ↔ C++ boundary uses a C ABI
-    # (Cython) and the extension does not share C++ objects with other libs.
-    EXTRA_LINK_ARGS.extend(["-fopenmp", "-static-libgcc", "-static-libstdc++"])
+    # Do not statically link to libstdc++; this will cause compatibility issues.
+    # gcc-toolset-14's libgomp.a is not built with -fPIC on both x86_64 and aarch64,
+    # so we dynamically link libgomp and exclude it via auditwheel instead.
+    EXTRA_LINK_ARGS.extend(["-fopenmp", "-static-libgcc"])
     # Check if BLAS is enabled in environment
     if os.path.exists(f"{LLAMACPP_LIBS_DIR}/libggml-blas.a"):
         print("BLAS is enabled, adding ggml-blas to link targets")

@@ -5,11 +5,14 @@
 // server-cors-proxy.h uses server_http_proxy which is defined in server-models.h
 #include "server-models.h"
 #include "server-cors-proxy.h"
+#include "server-tools.h"
 // clang-format on
 #include "server-http.h"
 
 #include "arg.h"
+#include "build-info.h"
 #include "common.h"
+#include "fit.h"
 #include "llama.h"
 #include "log.h"
 
@@ -83,6 +86,8 @@ static void init(common_params &params, server_context &ctx_server,
                  std::string &listening_address, std::promise<int> out) {
   common_log_set_verbosity_thold(params.verbosity);
 
+  common_init();
+
   // validate batch size for embeddings
   // embeddings require all tokens to be processed in a single ubatch
   // see https://github.com/ggml-org/llama.cpp/issues/12836
@@ -108,17 +113,11 @@ static void init(common_params &params, server_context &ctx_server,
     params.model_alias.insert(params.model.name);
   }
 
-  common_init();
   llama_backend_init();
   llama_numa_init(params.numa);
 
-  LOG_INF(
-      "system info: n_threads = %d, n_threads_batch = %d, total_threads = %d\n",
-      params.cpuparams.n_threads, params.cpuparams_batch.n_threads,
-      std::thread::hardware_concurrency());
-  LOG_INF("\n");
+  LOG_INF("build_info: %s\n", llama_build_info());
   LOG_INF("%s\n", common_params_get_system_info(params).c_str());
-  LOG_INF("\n");
 
   server_http_context ctx_http;
   if (!ctx_http.init(params)) {
@@ -133,6 +132,7 @@ static void init(common_params &params, server_context &ctx_server,
 
   // register API routes
   server_routes routes(params, ctx_server);
+  server_tools tools;
 
   constexpr bool is_router_server = false;
   std::optional<server_models_routes> models_routes{};
@@ -151,11 +151,11 @@ static void init(common_params &params, server_context &ctx_server,
     // note: routes.get_health stays the same
     routes.get_metrics = models_routes->proxy_get;
     routes.post_props = models_routes->proxy_post;
-    routes.get_api_show = models_routes->proxy_get;
     routes.post_completions = models_routes->proxy_post;
     routes.post_completions_oai = models_routes->proxy_post;
     routes.post_chat_completions = models_routes->proxy_post;
     routes.post_responses_oai = models_routes->proxy_post;
+    routes.post_transcriptions_oai = models_routes->proxy_post;
     routes.post_anthropic_messages = models_routes->proxy_post;
     routes.post_anthropic_count_tokens = models_routes->proxy_post;
     routes.post_infill = models_routes->proxy_post;
@@ -188,28 +188,24 @@ static void init(common_params &params, server_context &ctx_server,
   ctx_http.get("/metrics", ex_wrapper(routes.get_metrics));
   ctx_http.get("/props", ex_wrapper(routes.get_props));
   ctx_http.post("/props", ex_wrapper(routes.post_props));
-  ctx_http.post("/api/show", ex_wrapper(routes.get_api_show));
   ctx_http.get(
       "/models",
       ex_wrapper(routes.get_models)); // public endpoint (no API key check)
   ctx_http.get(
       "/v1/models",
       ex_wrapper(routes.get_models)); // public endpoint (no API key check)
-  ctx_http.get(
-      "/api/tags",
-      ex_wrapper(routes.get_models)); // ollama specific endpoint. public
-                                      // endpoint (no API key check)
   ctx_http.post("/completion", ex_wrapper(routes.post_completions)); // legacy
   ctx_http.post("/completions", ex_wrapper(routes.post_completions));
   ctx_http.post("/v1/completions", ex_wrapper(routes.post_completions_oai));
   ctx_http.post("/chat/completions", ex_wrapper(routes.post_chat_completions));
   ctx_http.post("/v1/chat/completions",
                 ex_wrapper(routes.post_chat_completions));
-  ctx_http.post(
-      "/api/chat",
-      ex_wrapper(routes.post_chat_completions)); // ollama specific endpoint
   ctx_http.post("/v1/responses", ex_wrapper(routes.post_responses_oai));
   ctx_http.post("/responses", ex_wrapper(routes.post_responses_oai));
+  ctx_http.post("/v1/audio/transcriptions",
+                ex_wrapper(routes.post_transcriptions_oai));
+  ctx_http.post("/audio/transcriptions",
+                ex_wrapper(routes.post_transcriptions_oai));
   ctx_http.post(
       "/v1/messages",
       ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
@@ -234,6 +230,10 @@ static void init(common_params &params, server_context &ctx_server,
   // Save & load slots
   ctx_http.get("/slots", ex_wrapper(routes.get_slots));
   ctx_http.post("/slots/:id_slot", ex_wrapper(routes.post_slots));
+
+  // Google Cloud Platform (Vertex AI) compat
+  ctx_http.register_gcp_compat();
+
   // CORS proxy (EXPERIMENTAL, only used by the Web UI for MCP)
   if (params.webui_mcp_proxy) {
     SRV_WRN("%s", "-----------------\n");
@@ -244,6 +244,25 @@ static void init(common_params &params, server_context &ctx_server,
     SRV_WRN("%s", "-----------------\n");
     ctx_http.get("/cors-proxy", ex_wrapper(proxy_handler_get));
     ctx_http.post("/cors-proxy", ex_wrapper(proxy_handler_post));
+  }
+  // EXPERIMENTAL built-in tools
+  if (!params.server_tools.empty()) {
+    try {
+      tools.setup(params.server_tools);
+    } catch (const std::exception &e) {
+      LOG_ERR("%s: tools setup failed: %s\n", __func__, e.what());
+      out.set_value(1);
+      return;
+    }
+    SRV_WRN("%s", "-----------------\n");
+    SRV_WRN("%s",
+            "Built-in tools are enabled, do not expose server to untrusted "
+            "environments\n");
+    SRV_WRN("%s",
+            "This feature is EXPERIMENTAL and may be changed in the future\n");
+    SRV_WRN("%s", "-----------------\n");
+    ctx_http.get("/tools", ex_wrapper(tools.handle_get));
+    ctx_http.post("/tools", ex_wrapper(tools.handle_post));
   }
 
   //
@@ -295,6 +314,12 @@ static void init(common_params &params, server_context &ctx_server,
 
     // load the model
     LOG_INF("%s: loading model\n", __func__);
+
+    if (server_models::is_child_server()) {
+      ctx_server.on_sleeping_changed([&](bool sleeping) {
+        server_models::notify_router_sleeping_state(sleeping);
+      });
+    }
 
     if (!ctx_server.load_model(params)) {
       clean_up();
@@ -352,10 +377,11 @@ static void init(common_params &params, server_context &ctx_server,
     LOG_INF("%s: starting the main loop...\n", __func__);
 
     // optionally, notify router server that this instance is ready
-    const char *router_port = std::getenv("LLAMA_SERVER_ROUTER_PORT");
     std::thread monitor_thread;
-    if (router_port != nullptr) {
-      monitor_thread = server_models::setup_child_server(shutdown_handler);
+    if (server_models::is_child_server()) {
+      json model_info = routes.get_model_info();
+      monitor_thread =
+          server_models::setup_child_server(shutdown_handler, model_info);
     }
 
     // write the listening_address
@@ -373,10 +399,10 @@ static void init(common_params &params, server_context &ctx_server,
     if (monitor_thread.joinable()) {
       monitor_thread.join();
     }
-    // crash during llama_memory_breakdown_print if the model is rerank.
+    // crash during common_memory_breakdown_print if the model is rerank.
     auto *ll_ctx = ctx_server.get_llama_context();
     if (ll_ctx != nullptr && params.pooling_type != LLAMA_POOLING_TYPE_RANK) {
-      llama_memory_breakdown_print(ll_ctx);
+      common_memory_breakdown_print(ll_ctx);
     }
   }
 }
@@ -533,19 +559,19 @@ Server::~Server() {
 std::string Server::listening_address() const { return _listening_address; }
 
 std::string Server::handle_metrics() {
-  server_http_req req{{}, {}, "", "", "", not_stop};
+  server_http_req req{{}, {}, "", "", "", {}, not_stop};
   auto res = _routes->get_metrics(req);
   return res->data;
 }
 
 std::string Server::handle_embeddings(const std::string &input_json_str) {
-  server_http_req req{{}, {}, "", "", input_json_str, not_stop};
+  server_http_req req{{}, {}, "", "", input_json_str, {}, not_stop};
   auto res = _routes->post_embeddings_oai(req);
   return res->data;
 }
 
 std::string Server::handle_rerank(const std::string &input_json_str) {
-  server_http_req req{{}, {}, "", "", input_json_str, not_stop};
+  server_http_req req{{}, {}, "", "", input_json_str, {}, not_stop};
   auto res = _routes->post_rerank(req);
   return res->data;
 }
@@ -553,7 +579,7 @@ std::string Server::handle_rerank(const std::string &input_json_str) {
 void Server::handle_completions(const std::string &prompt_json_str,
                                 Callback res_err, void *py_cb_err,
                                 Callback res_ok, void *py_cb_ok) {
-  server_http_req req{{}, {}, "", "", prompt_json_str, not_stop};
+  server_http_req req{{}, {}, "", "", prompt_json_str, {}, not_stop};
   auto res = _routes->post_completions_oai(req);
   process_handler_response(
       res,
@@ -568,7 +594,7 @@ void Server::handle_completions(const std::string &prompt_json_str,
 void Server::handle_chat_completions(const std::string &prompt_json_str,
                                      Callback res_err, void *py_cb_err,
                                      Callback res_ok, void *py_cb_ok) {
-  server_http_req req{{}, {}, "", "", prompt_json_str, not_stop};
+  server_http_req req{{}, {}, "", "", prompt_json_str, {}, not_stop};
   auto res = _routes->post_chat_completions(req);
   process_handler_response(
       res,

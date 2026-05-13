@@ -16,7 +16,8 @@ log_info() {
 output_dir=${1:-"index/whl/cpu"}
 
 # Get pattern from second arg or default to valid python package version pattern
-pattern=${2:-"^[v]?[0-9]+\.[0-9]+\.[0-9]+$"}
+# Supports both standard versions (v2026.4.8672) and patch versions (v2026.4.8672.1)
+pattern=${2:-"^[v]?[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$"}
 
 # Get the current directory (where the script is run from)
 current_dir="$(pwd)"
@@ -86,8 +87,8 @@ for release in $releases; do
         continue
     fi
 
-    # Get release version from release ie v0.1.0-cu121 -> v0.1.0
-    release_version=$(echo "$release" | grep -oE "^[v]?[0-9]+\.[0-9]+\.[0-9]+")
+    # Get release version from release ie v0.1.0-cu121 -> v0.1.0, v2026.4.8672.1 -> v2026.4.8672.1
+    release_version=$(echo "$release" | grep -oE "^[v]?[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?")
     # Track first-seen order of versions
     if [ ! -f "$tmp_dir/.${release_version}.seen" ]; then
         echo "$release_version" >> "$tmp_dir/order.txt"
